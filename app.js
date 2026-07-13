@@ -192,13 +192,14 @@ function parseSysNuevos(rows) {
             row = joinedRow.split(';');
         }
         
-        if (row.length < 6) continue;
+        if (row.length < 7) continue;
         
         let sku = row[1];
         let desc = row[2];
         let stockCoronel = parseInt(row[4], 10) || 0;
         let stockSantiago = parseInt(row[5], 10) || 0;
-        let totalStock = stockCoronel + stockSantiago;
+        let stockSantiago1435 = parseInt(row[6], 10) || 0;
+        let totalStock = stockCoronel + stockSantiago + stockSantiago1435;
         
         if (sku !== undefined && sku !== null && sku !== '') {
             sku = sku.toString().replace(/^['"]+/, '').replace(/['"]+$/, '').trim().toUpperCase();
@@ -210,12 +211,14 @@ function parseSysNuevos(rows) {
                 map[sku].stock += totalStock;
                 map[sku].gilStock += stockCoronel;
                 map[sku].marzoStock += stockSantiago;
+                map[sku].marzo1435Stock += stockSantiago1435;
             } else {
                 map[sku] = {
                     stock: totalStock,
                     descripcion: descVal,
                     gilStock: stockCoronel,
-                    marzoStock: stockSantiago
+                    marzoStock: stockSantiago,
+                    marzo1435Stock: stockSantiago1435
                 };
             }
         }
@@ -1054,7 +1057,8 @@ const statsRestock = {
     models: document.getElementById('stat-restock-models'),
     total: document.getElementById('stat-restock-total'),
     gil: document.getElementById('stat-restock-gil'),
-    marzo: document.getElementById('stat-restock-marzo')
+    marzo: document.getElementById('stat-restock-marzo'),
+    marzo1435: document.getElementById('stat-restock-marzo1435')
 };
 
 let dataMlFullStock = null;
@@ -1208,24 +1212,28 @@ function calcularEnvíosRestock() {
         
         let sysStockGil = 0;
         let sysStockMarzo = 0;
+        let sysStockMarzo1435 = 0;
         let sysDesc = '';
         
         if (dataSysRestock.hasOwnProperty(skuForSystem)) {
             const sysItem = dataSysRestock[skuForSystem];
             sysStockGil = sysItem.gilStock || 0;
             sysStockMarzo = sysItem.marzoStock || 0;
+            sysStockMarzo1435 = sysItem.marzo1435Stock || 0;
             sysDesc = sysItem.descripcion || '';
         }
         
         // Ajustar stock local para kits
         const availGilKits = Math.floor(sysStockGil / multiplier);
         const availMarzoKits = Math.floor(sysStockMarzo / multiplier);
-        const availTotalKits = availGilKits + availMarzoKits;
+        const availMarzo1435Kits = Math.floor(sysStockMarzo1435 / multiplier);
+        const availTotalKits = availGilKits + availMarzoKits + availMarzo1435Kits;
         
         const toSendKits = Math.min(deficit, availTotalKits);
         
         let sendGil = 0;
         let sendMarzo = 0;
+        let sendMarzo1435 = 0;
         let sugerencia = '';
         let badgeClass = '';
         
@@ -1243,22 +1251,36 @@ function calcularEnvíosRestock() {
             if (availGilKits >= toSendKits) {
                 sendGil = toSendKits;
                 sendMarzo = 0;
+                sendMarzo1435 = 0;
             } else if (availMarzoKits >= toSendKits) {
                 sendGil = 0;
                 sendMarzo = toSendKits;
+                sendMarzo1435 = 0;
+            } else if (availMarzo1435Kits >= toSendKits) {
+                sendGil = 0;
+                sendMarzo = 0;
+                sendMarzo1435 = toSendKits;
             } else {
+                // Distribute: Gil first, then Marzo, then Marzo 1435
                 sendGil = availGilKits;
-                sendMarzo = toSendKits - availGilKits;
+                let remaining = toSendKits - sendGil;
+                if (availMarzoKits >= remaining) {
+                    sendMarzo = remaining;
+                    sendMarzo1435 = 0;
+                } else {
+                    sendMarzo = availMarzoKits;
+                    remaining -= sendMarzo;
+                    sendMarzo1435 = Math.min(availMarzo1435Kits, remaining);
+                }
             }
             
             const unitName = multiplier > 1 ? 'kit(s)' : 'u.';
-            if (sendGil > 0 && sendMarzo > 0) {
-                sugerencia = `Enviar ${toSendKits} ${unitName} (Mandar ${sendGil} de Gil y ${sendMarzo} de Santiago Marzo)`;
-            } else if (sendGil > 0) {
-                sugerencia = `Enviar ${toSendKits} ${unitName} (Mandar de Coronel Gil)`;
-            } else {
-                sugerencia = `Enviar ${toSendKits} ${unitName} (Mandar de Santiago Marzo)`;
-            }
+            const parts = [];
+            if (sendGil > 0) parts.push(`${sendGil} de Gil`);
+            if (sendMarzo > 0) parts.push(`${sendMarzo} de Santiago Marzo`);
+            if (sendMarzo1435 > 0) parts.push(`${sendMarzo1435} de Santiago Marzo 1435`);
+            
+            sugerencia = `Enviar ${toSendKits} ${unitName} (Mandar ${parts.join(' y ')})`;
             
             if (toSendKits < deficit) {
                 sugerencia += ` - Faltan ${deficit - toSendKits} ${unitName} por falta de stock`;
@@ -1274,12 +1296,14 @@ function calcularEnvíosRestock() {
             Pendientes: mlPendientes,
             LocalGil: sysStockGil,
             LocalMarzo: sysStockMarzo,
+            LocalMarzo1435: sysStockMarzo1435,
             Multiplier: multiplier,
             Deficit: deficit,
             
             // Guardar valores recomendados originales como referencia
             RecGil: sendGil,
             RecMarzo: sendMarzo,
+            RecMarzo1435: sendMarzo1435,
             RecSugerencia: sugerencia,
             RecBadgeClass: badgeClass,
             
@@ -1287,6 +1311,7 @@ function calcularEnvíosRestock() {
             ToSend: null,
             SendGil: 0,
             SendMarzo: 0,
+            SendMarzo1435: 0,
             Sugerencia: sugerencia,
             _badgeClass: badgeClass
         });
@@ -1300,12 +1325,12 @@ function renderTableRestock() {
     resultsBodyRestock.innerHTML = '';
     
     // Ordenar de mayor a menor según el stock local total
-    finalResultsRestock.sort((a, b) => (b.LocalGil + b.LocalMarzo) - (a.LocalGil + a.LocalMarzo));
+    finalResultsRestock.sort((a, b) => (b.LocalGil + b.LocalMarzo + b.LocalMarzo1435) - (a.LocalGil + a.LocalMarzo + a.LocalMarzo1435));
     
     finalResultsRestock.forEach(item => {
         const tr = document.createElement('tr');
         
-        const localDisplay = `Gil: ${item.LocalGil} | Marzo: ${item.LocalMarzo}`;
+        const localDisplay = `Gil: ${item.LocalGil} | Marzo: ${item.LocalMarzo} | 1435: ${item.LocalMarzo1435}`;
         const mlDisplay = item.Multiplier > 1 
             ? `${item.Aptas} <span style="font-size: 0.8rem; color: var(--text-secondary);">(x${item.Multiplier})</span>`
             : item.Aptas;
@@ -1350,10 +1375,12 @@ function actualizarCantidadSugerida(sku, newVal) {
     const multiplier = item.Multiplier;
     const availGilKits = Math.floor(item.LocalGil / multiplier);
     const availMarzoKits = Math.floor(item.LocalMarzo / multiplier);
-    const totalAvailKits = availGilKits + availMarzoKits;
+    const availMarzo1435Kits = Math.floor(item.LocalMarzo1435 / multiplier);
+    const totalAvailKits = availGilKits + availMarzoKits + availMarzo1435Kits;
     
     let sendGil = 0;
     let sendMarzo = 0;
+    let sendMarzo1435 = 0;
     let sugerencia = '';
     let badgeClass = '';
     
@@ -1361,6 +1388,7 @@ function actualizarCantidadSugerida(sku, newVal) {
         // Si está vacío, restaurar recomendación original
         sendGil = item.RecGil;
         sendMarzo = item.RecMarzo;
+        sendMarzo1435 = item.RecMarzo1435;
         sugerencia = item.RecSugerencia;
         badgeClass = item.RecBadgeClass;
     } else if (newVal === 0) {
@@ -1372,18 +1400,34 @@ function actualizarCantidadSugerida(sku, newVal) {
         if (availGilKits >= newVal) {
             sendGil = newVal;
             sendMarzo = 0;
+            sendMarzo1435 = 0;
         } else if (availMarzoKits >= newVal) {
             sendGil = 0;
             sendMarzo = newVal;
+            sendMarzo1435 = 0;
+        } else if (availMarzo1435Kits >= newVal) {
+            sendGil = 0;
+            sendMarzo = 0;
+            sendMarzo1435 = newVal;
         } else {
+            // Distribute: Gil first, then Marzo, then Marzo 1435
             sendGil = availGilKits;
-            sendMarzo = Math.min(availMarzoKits, newVal - availGilKits);
+            let remaining = newVal - sendGil;
+            if (availMarzoKits >= remaining) {
+                sendMarzo = remaining;
+                sendMarzo1435 = 0;
+            } else {
+                sendMarzo = availMarzoKits;
+                remaining -= sendMarzo;
+                sendMarzo1435 = Math.min(availMarzo1435Kits, remaining);
+            }
         }
         
         const unitName = multiplier > 1 ? 'kit(s)' : 'u.';
         const parts = [];
         if (sendGil > 0) parts.push(`${sendGil} de Gil`);
         if (sendMarzo > 0) parts.push(`${sendMarzo} de Santiago Marzo`);
+        if (sendMarzo1435 > 0) parts.push(`${sendMarzo1435} de Santiago Marzo 1435`);
         
         if (parts.length > 0) {
             sugerencia = `Enviar ${newVal} ${unitName} (Mandar ${parts.join(' y ')})`;
@@ -1391,7 +1435,7 @@ function actualizarCantidadSugerida(sku, newVal) {
             sugerencia = `Enviar ${newVal} ${unitName} (Falta stock local)`;
         }
         
-        const totalSentKits = sendGil + sendMarzo;
+        const totalSentKits = sendGil + sendMarzo + sendMarzo1435;
         if (totalSentKits < newVal) {
             sugerencia += ` - Faltan ${newVal - totalSentKits} ${unitName} localmente`;
             badgeClass = "bg-warning";
@@ -1401,11 +1445,13 @@ function actualizarCantidadSugerida(sku, newVal) {
     if (newVal === null) {
         item.SendGil = 0;
         item.SendMarzo = 0;
+        item.SendMarzo1435 = 0;
         item.Sugerencia = item.RecSugerencia;
         item._badgeClass = item.RecBadgeClass;
     } else {
         item.SendGil = sendGil;
         item.SendMarzo = sendMarzo;
+        item.SendMarzo1435 = sendMarzo1435;
         item.Sugerencia = sugerencia;
         item._badgeClass = badgeClass;
     }
@@ -1426,6 +1472,7 @@ function recalcularEstadisticasGlobalesRestock() {
     let totalSend = 0;
     let totalGil = 0;
     let totalMarzo = 0;
+    let totalMarzo1435 = 0;
     let countModels = 0;
     
     finalResultsRestock.forEach(item => {
@@ -1433,6 +1480,7 @@ function recalcularEstadisticasGlobalesRestock() {
             totalSend += item.ToSend * item.Multiplier;
             totalGil += item.SendGil * item.Multiplier;
             totalMarzo += item.SendMarzo * item.Multiplier;
+            totalMarzo1435 += item.SendMarzo1435 * item.Multiplier;
             countModels++;
         }
     });
@@ -1441,6 +1489,7 @@ function recalcularEstadisticasGlobalesRestock() {
     statsRestock.total.textContent = totalSend;
     statsRestock.gil.textContent = totalGil;
     statsRestock.marzo.textContent = totalMarzo;
+    statsRestock.marzo1435.textContent = totalMarzo1435;
 }
 
 btnDownloadRestock.addEventListener('click', () => {
@@ -1465,6 +1514,7 @@ btnDownloadRestock.addEventListener('click', () => {
             'En camino (Pendiente)': item.Pendientes,
             'Stock Coronel Gil': item.LocalGil,
             'Stock Santiago Marzo': item.LocalMarzo,
+            'Stock Santiago Marzo 1435': item.LocalMarzo1435,
             'Cantidad a Enviar': item.ToSend,
             'Distribución de Origen': item.Sugerencia
         };
@@ -1480,6 +1530,7 @@ btnDownloadRestock.addEventListener('click', () => {
         {wch: 20}, // Camino
         {wch: 20}, // Gil
         {wch: 20}, // Marzo
+        {wch: 25}, // Marzo 1435
         {wch: 20}, // Cantidad a Enviar
         {wch: 55}  // Sugerencia
     ];

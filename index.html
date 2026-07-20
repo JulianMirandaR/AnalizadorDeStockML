@@ -32,6 +32,7 @@
         <button class="tab-btn" data-tab="nuevos">Auditoría Nuevos</button>
         <button class="tab-btn" data-tab="rentabilidad">Análisis de Rentabilidad</button>
         <button class="tab-btn" data-tab="restock-full">Envíos a Full</button>
+        <button class="tab-btn" data-tab="pedidos">📦 Pedidos</button>
     </nav>
 
     <main class="dashboard">
@@ -458,6 +459,109 @@
                         </thead>
                         <tbody id="results-body-restock">
                         </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+
+        <!-- TAB PEDIDOS -->
+        <div id="tab-pedidos" class="tab-content">
+            <header class="header">
+                <div class="brand">
+                    <i class="fa-solid fa-cart-shopping"></i>
+                    <h1>Planificación de Pedidos</h1>
+                </div>
+                <p>Analizá ventas de los últimos 2 meses vs. stock consolidado para determinar qué neumáticos comprar y cuántos</p>
+            </header>
+
+            <section class="upload-section">
+                <div class="upload-card" id="pedidos-drop-sales">
+                    <div class="card-icon">
+                        <i class="fa-solid fa-chart-line"></i>
+                    </div>
+                    <h3>Ventas (últimos 2 meses)</h3>
+                    <p>Excel de ventas de Mercado Libre (Col G: unidades, Col W: SKU, Col Z: título)</p>
+                    <input type="file" id="pedidos-file-sales" accept=".xlsx, .xls" hidden>
+                    <div class="file-status" id="pedidos-status-sales">Sin archivo</div>
+                </div>
+
+                <div class="upload-card" id="pedidos-drop-stock">
+                    <div class="card-icon">
+                        <i class="fa-solid fa-warehouse"></i>
+                    </div>
+                    <h3>Stock Total por Depósito</h3>
+                    <p>Excel con SKU (Col B), Coronel Gil (Col F), S. Marzo (Col G), S. Marzo 1435 (Col H), Full (Col I), Costo (Col J)</p>
+                    <input type="file" id="pedidos-file-stock" accept=".xlsx, .xls, .csv" hidden>
+                    <div class="file-status" id="pedidos-status-stock">Sin archivo</div>
+                </div>
+            </section>
+
+            <section class="config-section" style="background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 16px; padding: 1.5rem; backdrop-filter: blur(10px); display: flex; flex-wrap: wrap; gap: 2rem; align-items: center; justify-content: center; margin: 0 1.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <label for="pedidos-meses" style="font-weight: 600; color: var(--text-primary);">Meses de stock a cubrir:</label>
+                    <input type="number" id="pedidos-meses" value="2" min="0.5" max="12" step="0.5" style="width: 80px; padding: 0.5rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 1rem; text-align: center;">
+                </div>
+                <p style="color: var(--text-secondary); font-size: 0.88rem;">El sistema calculará: <strong style="color:var(--accent-cyan);">Pedido = (Ventas mensuales × Meses) − Stock actual</strong></p>
+            </section>
+
+            <section class="results-section" id="pedidos-results-panel" style="display:none;">
+                <div class="results-header">
+                    <h2><i class="fa-solid fa-clipboard-list"></i> Plan de Compras</h2>
+                    <button id="pedidos-btn-download" class="btn-secondary">
+                        <i class="fa-solid fa-download"></i>
+                        Descargar Plan de Pedido (Excel)
+                    </button>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <i class="fa-solid fa-layer-group" style="color: var(--accent-cyan);"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="pedidos-stat-skus">0</span>
+                            <span class="stat-label">SKUs Analizados</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-box-open" style="color: var(--warning);"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="pedidos-stat-ventas">0</span>
+                            <span class="stat-label">Ventas Totales (2m)</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-cart-plus" style="color: #22c55e;"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="pedidos-stat-unidades">0</span>
+                            <span class="stat-label">Unidades a Comprar</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-money-bill-wave" style="color: #f59e0b;"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="pedidos-stat-inversion">$0</span>
+                            <span class="stat-label">Inversión Estimada (ARS)</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-container">
+                    <table id="pedidos-results-table">
+                        <thead>
+                            <tr>
+                                <th>SKU</th>
+                                <th>Descripción</th>
+                                <th style="text-align:center;">Ventas (2m)</th>
+                                <th style="text-align:center;">C. Gil</th>
+                                <th style="text-align:center;">S. Marzo</th>
+                                <th style="text-align:center;">S. Marzo 1435</th>
+                                <th style="text-align:center;">Full</th>
+                                <th style="text-align:center;">Stock Total</th>
+                                <th style="text-align:center;">A Comprar</th>
+                                <th style="text-align:center;">Costo Unit.</th>
+                                <th style="text-align:center;">Inversión</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pedidos-results-body"></tbody>
                     </table>
                 </div>
             </section>

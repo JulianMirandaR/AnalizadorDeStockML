@@ -1545,3 +1545,273 @@ btnDownloadRestock.addEventListener('click', () => {
     const dateStr = new Date().toISOString().split('T')[0];
     XLSX.writeFile(wb, `Plan_Envio_Full_${dateStr}.xlsx`);
 });
+
+// =============================================
+// --- MÓDULO PEDIDOS (Reposición de Stock) ---
+// =============================================
+
+(function() {
+    const dropSales   = document.getElementById('pedidos-drop-sales');
+    const dropStock   = document.getElementById('pedidos-drop-stock');
+    const fileSales   = document.getElementById('pedidos-file-sales');
+    const fileStock   = document.getElementById('pedidos-file-stock');
+    const statusSales = document.getElementById('pedidos-status-sales');
+    const statusStock = document.getElementById('pedidos-status-stock');
+    const mesesInput  = document.getElementById('pedidos-meses');
+    const resultsPanel= document.getElementById('pedidos-results-panel');
+    const resultsBody = document.getElementById('pedidos-results-body');
+    const btnDownload = document.getElementById('pedidos-btn-download');
+
+    let salesMap = null;   // Map: sku -> { sku, descripcion, unidades }
+    let stockMap = null;   // Map: sku -> { sku, descripcion, cgil, sMarzo, sMarzo1435, full, costo }
+    let pedidosResults = [];
+
+    // --- HELPERS ---
+    function cleanSkuP(raw) {
+        if (raw === undefined || raw === null) return '';
+        let s = String(raw).trim();
+        if (s.startsWith("'")) s = s.substring(1);
+        s = s.trim().split('.')[0].split(',')[0];
+        return s;
+    }
+
+    function fmt(n) {
+        return n.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    }
+
+    // --- DROP ZONE SETUP ---
+    function setupPedidosZone(dropZone, fileInput, onFile) {
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) onFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length) onFile(fileInput.files[0]);
+        });
+    }
+
+    setupPedidosZone(dropSales, fileSales, handleSalesFile);
+    setupPedidosZone(dropStock, fileStock, handleStockFile);
+
+    // --- PARSE VENTAS ---
+    function handleSalesFile(file) {
+        statusSales.textContent = 'Procesando...';
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+                let headerIdx = 5, skuIdx = 22, descIdx = 25, unitsIdx = 6;
+
+                for (let i = 0; i < Math.min(rows.length, 15); i++) {
+                    const row = rows[i];
+                    if (!row || !Array.isArray(row)) continue;
+                    const cols = Array.from(row).map(c => String(c || '').toLowerCase().trim());
+                    const tSku   = cols.findIndex(c => c === 'sku' || c === 'código' || c === 'codigo');
+                    const tUnits = cols.findIndex(c => c === 'unidades' || c === 'cantidad' || c === 'cant');
+                    let   tDesc  = cols.findIndex(c => c && (c.includes('título') || c.includes('titulo')));
+                    if (tDesc === -1) tDesc = cols.findIndex(c => c && c.includes('descripción') && !c.includes('estado'));
+                    if (tSku !== -1 && tUnits !== -1) {
+                        headerIdx = i; skuIdx = tSku; unitsIdx = tUnits;
+                        if (tDesc !== -1) descIdx = tDesc;
+                        break;
+                    }
+                }
+
+                salesMap = new Map();
+                let totalUnits = 0;
+                for (let i = headerIdx + 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    if (!row || row.length === 0) continue;
+                    const sku   = cleanSkuP(row[skuIdx]);
+                    if (!sku) continue;
+                    const units = parseInt(row[unitsIdx]) || 0;
+                    if (units <= 0) continue;
+                    const desc  = String(row[descIdx] !== undefined ? row[descIdx] : '').trim();
+                    totalUnits += units;
+                    const ex = salesMap.get(sku);
+                    if (ex) { ex.unidades += units; if (!ex.descripcion && desc) ex.descripcion = desc; }
+                    else salesMap.set(sku, { sku, descripcion: desc, unidades: units });
+                }
+
+                dropSales.classList.add('drag-over');
+                statusSales.textContent = `✓ ${file.name} — ${salesMap.size} SKUs, ${totalUnits} uds.`;
+                statusSales.classList.add('uploaded');
+                tryRenderPedidos();
+            } catch(err) {
+                console.error(err);
+                Swal.fire('Error', 'No se pudo leer el archivo de ventas: ' + err.message, 'error');
+                statusSales.textContent = 'Error al leer';
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // --- PARSE STOCK ---
+    function handleStockFile(file) {
+        statusStock.textContent = 'Procesando...';
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+                let headerIdx = 0, skuIdx = 1, descIdx = 2;
+                let cgilIdx = 5, sMarzoIdx = 6, sMarzo1435Idx = 7, fullIdx = 8, costIdx = 9;
+
+                for (let i = 0; i < Math.min(rows.length, 15); i++) {
+                    const row = rows[i];
+                    if (!row || !Array.isArray(row)) continue;
+                    const cols = Array.from(row).map(c => String(c || '').toLowerCase().trim());
+                    const tSku = cols.findIndex(c => c === 'sku' || c === 'código' || c === 'codigo');
+                    if (tSku !== -1) {
+                        headerIdx = i; skuIdx = tSku;
+                        const tDesc  = cols.findIndex(c => c && (c.includes('descripción') || c.includes('descripcion') || c.includes('detalle') || c.includes('nombre') || c.includes('producto')));
+                        if (tDesc !== -1) descIdx = tDesc;
+                        const tCgil  = cols.findIndex(c => c && (c.includes('coronel') || c.includes('cgil') || c.includes('c. gil')));
+                        if (tCgil !== -1) cgilIdx = tCgil;
+                        const tSm    = cols.findIndex(c => c && c.includes('santiago marzo') && !c.includes('1435'));
+                        if (tSm !== -1) sMarzoIdx = tSm;
+                        const tSm14  = cols.findIndex(c => c && (c.includes('santiago marzo 1435') || c.includes('1435')));
+                        if (tSm14 !== -1) sMarzo1435Idx = tSm14;
+                        const tFull  = cols.findIndex(c => c && (c.includes('full') || c.includes('ml full')));
+                        if (tFull !== -1) fullIdx = tFull;
+                        const tCost  = cols.findIndex(c => c && (c.includes('costo') || c === 'cost'));
+                        if (tCost !== -1) costIdx = tCost;
+                        break;
+                    }
+                }
+
+                stockMap = new Map();
+                for (let i = headerIdx + 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    if (!row || row.length === 0) continue;
+                    const sku = cleanSkuP(row[skuIdx]);
+                    if (!sku) continue;
+                    const desc       = String(row[descIdx] !== undefined ? row[descIdx] : '').trim();
+                    const cgil       = parseInt(row[cgilIdx])       || 0;
+                    const sMarzo     = parseInt(row[sMarzoIdx])     || 0;
+                    const sMarzo1435 = parseInt(row[sMarzo1435Idx]) || 0;
+                    const full       = parseInt(row[fullIdx])       || 0;
+                    const costo      = parseFloat(row[costIdx])     || 0;
+                    const ex = stockMap.get(sku);
+                    if (ex) { ex.cgil += cgil; ex.sMarzo += sMarzo; ex.sMarzo1435 += sMarzo1435; ex.full += full; }
+                    else stockMap.set(sku, { sku, descripcion: desc, cgil, sMarzo, sMarzo1435, full, costo });
+                }
+
+                statusStock.textContent = `✓ ${file.name} — ${stockMap.size} SKUs en stock.`;
+                statusStock.classList.add('uploaded');
+                tryRenderPedidos();
+            } catch(err) {
+                console.error(err);
+                Swal.fire('Error', 'No se pudo leer el archivo de stock: ' + err.message, 'error');
+                statusStock.textContent = 'Error al leer';
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // --- CALCULAR Y RENDERIZAR ---
+    function tryRenderPedidos() {
+        if (!salesMap || !stockMap) return;
+        calcAndRender();
+    }
+
+    function calcAndRender() {
+        const M = parseFloat(mesesInput.value) || 2;
+        const allSkus = new Set([...salesMap.keys(), ...stockMap.keys()]);
+        pedidosResults = [];
+
+        allSkus.forEach(sku => {
+            const sale  = salesMap.get(sku)  || { unidades: 0, descripcion: '' };
+            const stock = stockMap.get(sku)  || { descripcion: '', cgil: 0, sMarzo: 0, sMarzo1435: 0, full: 0, costo: 0 };
+            const desc        = stock.descripcion || sale.descripcion || '—';
+            const totalSold   = sale.unidades;
+            const monthly     = totalSold / 2;
+            const totalStock  = stock.cgil + stock.sMarzo + stock.sMarzo1435 + stock.full;
+            const costo       = stock.costo;
+            const recommended = Math.max(0, Math.ceil(monthly * M - totalStock));
+            const investment  = recommended * costo;
+            pedidosResults.push({ sku, desc, totalSold, cgil: stock.cgil, sMarzo: stock.sMarzo, sMarzo1435: stock.sMarzo1435, full: stock.full, totalStock, recommended, costo, investment });
+        });
+
+        pedidosResults.sort((a, b) => b.recommended - a.recommended || b.totalSold - a.totalSold);
+
+        // Stats
+        const toOrder     = pedidosResults.filter(r => r.recommended > 0);
+        const totalUnits  = toOrder.reduce((s, r) => s + r.recommended, 0);
+        const totalInv    = toOrder.reduce((s, r) => s + r.investment, 0);
+        const totalVentas = [...salesMap.values()].reduce((s, v) => s + v.unidades, 0);
+
+        document.getElementById('pedidos-stat-skus').textContent     = pedidosResults.length;
+        document.getElementById('pedidos-stat-ventas').textContent   = fmt(totalVentas);
+        document.getElementById('pedidos-stat-unidades').textContent = fmt(totalUnits);
+        document.getElementById('pedidos-stat-inversion').textContent= '$' + fmt(totalInv);
+
+        // Tabla
+        resultsBody.innerHTML = '';
+        pedidosResults.forEach(item => {
+            const tr = document.createElement('tr');
+            if (item.recommended > 0) tr.style.borderLeft = '3px solid #22c55e';
+            tr.innerHTML = `
+                <td><strong>${item.sku}</strong></td>
+                <td style="font-size:0.82rem; color:var(--text-secondary);">${item.desc}</td>
+                <td style="text-align:center;">${item.totalSold}</td>
+                <td style="text-align:center;">${item.cgil}</td>
+                <td style="text-align:center;">${item.sMarzo}</td>
+                <td style="text-align:center;">${item.sMarzo1435}</td>
+                <td style="text-align:center;">${item.full}</td>
+                <td style="text-align:center;"><strong>${item.totalStock}</strong></td>
+                <td style="text-align:center;"><strong style="color:${item.recommended > 0 ? '#22c55e' : 'inherit'};">${item.recommended}</strong></td>
+                <td style="text-align:center;">${item.costo > 0 ? '$' + fmt(item.costo) : '—'}</td>
+                <td style="text-align:center;">${item.investment > 0 ? '$' + fmt(item.investment) : '—'}</td>
+            `;
+            resultsBody.appendChild(tr);
+        });
+
+        resultsPanel.style.display = '';
+    }
+
+    // Recalcular al cambiar meses
+    mesesInput.addEventListener('change', () => { if (salesMap && stockMap) calcAndRender(); });
+    mesesInput.addEventListener('input',  () => { if (salesMap && stockMap) calcAndRender(); });
+
+    // --- EXPORTAR EXCEL ---
+    btnDownload.addEventListener('click', () => {
+        const toOrder = pedidosResults.filter(r => r.recommended > 0);
+        if (toOrder.length === 0) {
+            Swal.fire('Sin pedidos', 'No hay neumáticos que requieran compra con la cobertura actual.', 'info');
+            return;
+        }
+        const M = parseFloat(mesesInput.value) || 2;
+        const data = toOrder.map(item => ({
+            'SKU': item.sku,
+            'Descripción': item.desc,
+            'Ventas (2 meses)': item.totalSold,
+            'Stock Coronel Gil': item.cgil,
+            'Stock Santiago Marzo': item.sMarzo,
+            'Stock Santiago Marzo 1435': item.sMarzo1435,
+            'Stock ML Full': item.full,
+            'Stock Total': item.totalStock,
+            'Cantidad a Comprar': item.recommended,
+            'Costo Unitario (ARS)': item.costo || '',
+            'Inversión Total (ARS)': item.investment || ''
+        }));
+        const ws = XLSX.utils.json_to_sheet(data);
+        ws['!cols'] = [
+            {wch:15},{wch:45},{wch:16},{wch:18},{wch:20},{wch:22},{wch:16},{wch:14},{wch:18},{wch:20},{wch:20}
+        ];
+        const wbOut = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wbOut, ws, 'Plan de Pedido');
+        const dateStr = new Date().toISOString().split('T')[0];
+        XLSX.writeFile(wbOut, `Plan_de_Pedido_Neumaticos_${M}m_${dateStr}.xlsx`);
+    });
+})();
+

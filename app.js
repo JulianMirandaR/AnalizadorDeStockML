@@ -192,14 +192,14 @@ function parseSysNuevos(rows) {
             row = joinedRow.split(';');
         }
         
-        if (row.length < 8) continue;
+        if (row.length < 9) continue;
         
         let sku = row[1];
         let desc = row[2];
-        let stockCoronel = parseInt(row[4], 10) || 0;
-        let stockSantiago = parseInt(row[5], 10) || 0;
-        let stockSantiago1435 = parseInt(row[6], 10) || 0;
-        let stockFull = parseInt(row[7], 10) || 0;
+        let stockCoronel = parseInt(row[5], 10) || 0;      // Col F = Coronel Gil
+        let stockSantiago = parseInt(row[6], 10) || 0;     // Col G = Santiago Marzo
+        let stockSantiago1435 = parseInt(row[7], 10) || 0; // Col H = Santiago Marzo 1435
+        let stockFull = parseInt(row[8], 10) || 0;         // Col I = ML Full
         let totalStock = stockCoronel + stockSantiago + stockSantiago1435 + stockFull;
         
         if (sku !== undefined && sku !== null && sku !== '') {

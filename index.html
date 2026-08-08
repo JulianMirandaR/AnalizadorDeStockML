@@ -471,16 +471,36 @@
                     <i class="fa-solid fa-cart-shopping"></i>
                     <h1>Planificación de Pedidos</h1>
                 </div>
-                <p>Analizá ventas de los últimos 2 meses vs. stock consolidado para determinar qué neumáticos comprar y cuántos</p>
+                <p>Lista de precios completa (todas las marcas, ordenada por medida) cruzada con ventas, stock y oportunidades para armar el pedido</p>
             </header>
 
             <section class="upload-section">
+                <div class="upload-card" id="pedidos-drop-pricelist">
+                    <div class="card-icon">
+                        <i class="fa-solid fa-tags"></i>
+                    </div>
+                    <h3>Lista de Precios</h3>
+                    <p>Excel del proveedor con 1 hoja por marca (Kumho, Firemax, Triangle...). Columnas: Codigo, Sección, Perfil, Llanta, Diseño, PRECIO. Podés arrastrar varios archivos.</p>
+                    <input type="file" id="pedidos-file-pricelist" accept=".xlsx, .xls, .csv" multiple hidden>
+                    <div class="file-status" id="pedidos-status-pricelist">Sin archivo</div>
+                </div>
+
+                <div class="upload-card" id="pedidos-drop-oportunidades">
+                    <div class="card-icon">
+                        <i class="fa-solid fa-fire"></i>
+                    </div>
+                    <h3>Oportunidades <span style="font-weight:400; font-size:0.8rem; color:var(--text-secondary);">(opcional)</span></h3>
+                    <p>Listas de oportunidades del proveedor (Guerrini GRUPOA/GRUPOB). Su precio reemplaza al de la lista de precios. Podés arrastrar varios archivos.</p>
+                    <input type="file" id="pedidos-file-oportunidades" accept=".xlsx, .xls, .csv" multiple hidden>
+                    <div class="file-status" id="pedidos-status-oportunidades">Sin archivo</div>
+                </div>
+
                 <div class="upload-card" id="pedidos-drop-sales">
                     <div class="card-icon">
                         <i class="fa-solid fa-chart-line"></i>
                     </div>
-                    <h3>Ventas (últimos 2 meses)</h3>
-                    <p>Excel de ventas de Mercado Libre (Col G: unidades, Col W: SKU, Col Z: título)</p>
+                    <h3>Reporte de Ventas</h3>
+                    <p>Excel "reporte_ventas" (Col C: SKU, Col D: Descripción, Col E: Categoría, Col G: Cantidad). Se filtran solo las filas cuya categoría contiene "radial".</p>
                     <input type="file" id="pedidos-file-sales" accept=".xlsx, .xls" hidden>
                     <div class="file-status" id="pedidos-status-sales">Sin archivo</div>
                 </div>
@@ -489,7 +509,7 @@
                     <div class="card-icon">
                         <i class="fa-solid fa-warehouse"></i>
                     </div>
-                    <h3>Stock Total por Depósito</h3>
+                    <h3>Stock Total por Depósito <span style="font-weight:400; font-size:0.8rem; color:var(--text-secondary);">(opcional)</span></h3>
                     <p>Excel con SKU (Col B), Coronel Gil (Col F), S. Marzo (Col G), S. Marzo 1435 (Col H), Full (Col I), Costo (Col J)</p>
                     <input type="file" id="pedidos-file-stock" accept=".xlsx, .xls, .csv" hidden>
                     <div class="file-status" id="pedidos-status-stock">Sin archivo</div>
@@ -504,12 +524,33 @@
                 <p style="color: var(--text-secondary); font-size: 0.88rem;">El sistema calculará: <strong style="color:var(--accent-cyan);">Pedido = (Ventas mensuales × Meses) − Stock actual</strong></p>
             </section>
 
+            <section class="config-section" style="background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 16px; padding: 1.5rem; backdrop-filter: blur(10px); display: flex; flex-wrap: wrap; gap: 2rem; align-items: center; justify-content: center; margin: 1rem 1.5rem 0;">
+                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                    <label style="font-weight: 600; color: var(--text-primary);">Descuento Lista de Precios:</label>
+                    <input type="number" id="pedidos-desc-l1" value="0.65" min="0" max="1" step="0.01" class="pedidos-desc-input" style="width: 64px; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 0.95rem; text-align: center;">
+                    <span>×</span>
+                    <input type="number" id="pedidos-desc-l2" value="0.75" min="0" max="1" step="0.01" class="pedidos-desc-input" style="width: 64px; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 0.95rem; text-align: center;">
+                    <span>×</span>
+                    <input type="number" id="pedidos-desc-l3" value="0.92" min="0" max="1" step="0.01" class="pedidos-desc-input" style="width: 64px; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 0.95rem; text-align: center;">
+                    <span>×</span>
+                    <input type="number" id="pedidos-desc-l4" value="0.92" min="0" max="1" step="0.01" class="pedidos-desc-input" style="width: 64px; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 0.95rem; text-align: center;">
+                    <span>×</span>
+                    <input type="number" id="pedidos-desc-l5" value="0.97" min="0" max="1" step="0.01" class="pedidos-desc-input" style="width: 64px; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 0.95rem; text-align: center;">
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                    <label style="font-weight: 600; color: var(--text-primary);">Descuento Oportunidades:</label>
+                    <input type="number" id="pedidos-desc-o1" value="0.92" min="0" max="1" step="0.01" class="pedidos-desc-input" style="width: 64px; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 0.95rem; text-align: center;">
+                    <span>×</span>
+                    <input type="number" id="pedidos-desc-o2" value="0.97" min="0" max="1" step="0.01" class="pedidos-desc-input" style="width: 64px; padding: 0.4rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 0.95rem; text-align: center;">
+                </div>
+            </section>
+
             <section class="results-section" id="pedidos-results-panel" style="display:none;">
                 <div class="results-header">
-                    <h2><i class="fa-solid fa-clipboard-list"></i> Plan de Compras</h2>
+                    <h2><i class="fa-solid fa-clipboard-list"></i> Lista de Precios / Plan de Compras</h2>
                     <button id="pedidos-btn-download" class="btn-secondary">
                         <i class="fa-solid fa-download"></i>
-                        Descargar Plan de Pedido (Excel)
+                        Descargar Lista de Precios (Excel)
                     </button>
                 </div>
 
@@ -518,14 +559,21 @@
                         <i class="fa-solid fa-layer-group" style="color: var(--accent-cyan);"></i>
                         <div class="stat-info">
                             <span class="stat-value" id="pedidos-stat-skus">0</span>
-                            <span class="stat-label">SKUs Analizados</span>
+                            <span class="stat-label">SKUs en Lista</span>
                         </div>
                     </div>
                     <div class="stat-card">
                         <i class="fa-solid fa-box-open" style="color: var(--warning);"></i>
                         <div class="stat-info">
                             <span class="stat-value" id="pedidos-stat-ventas">0</span>
-                            <span class="stat-label">Ventas Totales (2m)</span>
+                            <span class="stat-label">Ventas Totales</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-calendar-days" style="color: var(--accent-cyan);"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="pedidos-stat-periodo">—</span>
+                            <span class="stat-label">Período de Ventas</span>
                         </div>
                     </div>
                     <div class="stat-card">
@@ -542,6 +590,13 @@
                             <span class="stat-label">Inversión Estimada (ARS)</span>
                         </div>
                     </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-tags" style="color: #a855f7;"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="pedidos-stat-oferta">0</span>
+                            <span class="stat-label">Líneas en Oferta</span>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="table-container">
@@ -549,14 +604,15 @@
                         <thead>
                             <tr>
                                 <th>SKU</th>
+                                <th style="text-align:center;">Medida</th>
+                                <th>Marca</th>
+                                <th>Modelo</th>
                                 <th>Descripción</th>
-                                <th style="text-align:center;">Ventas (2m)</th>
-                                <th style="text-align:center;">C. Gil</th>
-                                <th style="text-align:center;">S. Marzo</th>
-                                <th style="text-align:center;">S. Marzo 1435</th>
+                                <th style="text-align:center;">Ventas</th>
+                                <th style="text-align:center;" title="Coronel Gil + Santiago Marzo + Santiago Marzo 1435">Total Sucursales</th>
                                 <th style="text-align:center;">Full</th>
-                                <th style="text-align:center;">Stock Total</th>
                                 <th style="text-align:center;">A Comprar</th>
+                                <th style="text-align:center;">Oferta</th>
                                 <th style="text-align:center;">Costo Unit.</th>
                                 <th style="text-align:center;">Inversión</th>
                             </tr>

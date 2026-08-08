@@ -1551,22 +1551,37 @@ btnDownloadRestock.addEventListener('click', () => {
 // =============================================
 
 (function() {
+    const dropPriceList   = document.getElementById('pedidos-drop-pricelist');
+    const dropOportun     = document.getElementById('pedidos-drop-oportunidades');
     const dropSales   = document.getElementById('pedidos-drop-sales');
     const dropStock   = document.getElementById('pedidos-drop-stock');
+    const filePriceList    = document.getElementById('pedidos-file-pricelist');
+    const fileOportun      = document.getElementById('pedidos-file-oportunidades');
     const fileSales   = document.getElementById('pedidos-file-sales');
     const fileStock   = document.getElementById('pedidos-file-stock');
+    const statusPriceList  = document.getElementById('pedidos-status-pricelist');
+    const statusOportun    = document.getElementById('pedidos-status-oportunidades');
     const statusSales = document.getElementById('pedidos-status-sales');
     const statusStock = document.getElementById('pedidos-status-stock');
     const mesesInput  = document.getElementById('pedidos-meses');
     const resultsPanel= document.getElementById('pedidos-results-panel');
     const resultsBody = document.getElementById('pedidos-results-body');
     const btnDownload = document.getElementById('pedidos-btn-download');
+    const descListaInputs  = ['pedidos-desc-l1','pedidos-desc-l2','pedidos-desc-l3','pedidos-desc-l4','pedidos-desc-l5'].map(id => document.getElementById(id));
+    const descOportInputs  = ['pedidos-desc-o1','pedidos-desc-o2'].map(id => document.getElementById(id));
 
     let salesMap = null;   // Map: sku -> { sku, descripcion, unidades }
     let stockMap = null;   // Map: sku -> { sku, descripcion, cgil, sMarzo, sMarzo1435, full, costo }
+    let priceListMap = new Map();   // sku -> { sku, marca, medida, modelo, precioBase, fuente }
+    let offersBySku   = new Map();  // sku -> { precioBase, medida, modelo, fuente }  (Oportunidades)
+    let salesPeriodMonths = null;   // meses cubiertos por el reporte de ventas cargado (calculado de las fechas)
     let pedidosResults = [];
 
     // --- HELPERS ---
+    function norm(s) {
+        return String(s === undefined || s === null ? '' : s).toLowerCase().trim().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    }
+
     function cleanSkuP(raw) {
         if (raw === undefined || raw === null) return '';
         let s = String(raw).trim();
@@ -1575,8 +1590,103 @@ btnDownloadRestock.addEventListener('click', () => {
         return s;
     }
 
+    function descuentoCombinado(inputs) {
+        let f = 1;
+        inputs.forEach(inp => {
+            const v = inp ? parseFloat(inp.value) : NaN;
+            f *= (isNaN(v) || v <= 0) ? 1 : v;
+        });
+        return f;
+    }
+
+    // --- MEDIDA: parseo para poder ordenar numéricamente (205/60R16, 11R22.5, 7.50-16...) ---
+    function parseMedidaOrden(medida) {
+        if (!medida) return null;
+        const s = String(medida);
+        const m = s.match(/(\d+(?:\.\d+)?)\s*\/?\s*(\d+(?:\.\d+)?)?\s*R\s*(\d+(?:\.\d+)?)/i) || s.match(/(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/);
+        if (!m) return null;
+        if (m.length === 4) return { ancho: parseFloat(m[1]) || 0, perfil: parseFloat(m[2]) || 0, llanta: parseFloat(m[3]) || 0 };
+        return { ancho: parseFloat(m[1]) || 0, perfil: 0, llanta: parseFloat(m[2]) || 0 };
+    }
+    function compararMedida(a, b) {
+        const pa = parseMedidaOrden(a), pb = parseMedidaOrden(b);
+        if (!pa && !pb) return 0;
+        if (!pa) return 1;
+        if (!pb) return -1;
+        return (pa.ancho - pb.ancho) || (pa.perfil - pb.perfil) || (pa.llanta - pb.llanta);
+    }
+
+    // --- KITS: un kit son N unidades del mismo neumático base ---
+    // "kitx2-60700" -> { sku:"60700", mult:2 }   ·   "60700X2" -> { sku:"60700", mult:2 }
+    // (mismos formatos que manejan los otros módulos de la app)
+    function resolverKit(rawSku) {
+        const s = String(rawSku || '');
+        let m = s.match(/^kitx(\d+)-(.+)$/i);
+        if (m) return { sku: cleanSkuP(m[2]), mult: parseInt(m[1], 10) || 1 };
+        m = s.match(/^(.+)x(\d+)$/i);
+        if (m) return { sku: cleanSkuP(m[1]), mult: parseInt(m[2], 10) || 1 };
+        return { sku: s, mult: 1 };
+    }
+
     function fmt(n) {
         return n.toLocaleString('es-AR', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    }
+
+    // --- FILTRO: SOLO NEUMÁTICOS ---
+    // Se necesitan las dos señales por separado, porque ninguna cubre todo el catálogo:
+    // "Kit De 2 Neumáticos Kumho Es31 P 88 T" no trae medida, y
+    // "Scorpion Zero 255/55r18 All Season" no trae la palabra.
+    // La categoría del reporte de stock no sirve: hay neumáticos cargados en ACCESORIOS y en SIN CATEGORIA.
+    const RX_NEUM_PALABRA = /neum|cubierta/i;
+    const RX_NEUM_MEDIDA = [
+        /\d{3}\s*\/\s*\d{2}\s*(z\s*)?r?\s*\d{2}(\.\d)?/i,   // 195/65R15 · 175/65 R15 · 215/75R17.5 · Lt285/75r16
+        /\d{3}\s+\d{2}\s+(z\s*)?r\s*\d{2}/i,                // 205 55 R16 · 195 75 R16c · 195 55 Z R16
+        /\d{3}\s*r\s*\d{2}c?\b/i,                           // 195 R14 · 195r15c  (carga, sin perfil)
+        /\d{2}\s*x\s*\d{1,2}(\.\d+)?\s*(lt\s*)?r\s*\d{2}/i, // 31X10.50 R15LT · 31X10.50 LT R15  (la R evita "5w40 X 4l")
+        /\d\.\d{2}\s*r\s*\d{2}/i,                           // 5.00r12 · 5.00 R12
+        /\d\.\d{2}\s*-\s*\d{2}\b/                           // 7.50-16            (convencional)
+    ];
+
+    function esNeumatico() {
+        for (const txt of arguments) {
+            if (!txt) continue;
+            const s = String(txt);
+            if (RX_NEUM_PALABRA.test(s)) return true;
+            if (RX_NEUM_MEDIDA.some(rx => rx.test(s))) return true;
+        }
+        return false;
+    }
+
+    // --- REDONDEO DE COMPRA ---
+    // Nunca menos de 4 unidades; por debajo de 10 se redondea al par superior;
+    // de 10 en adelante, al múltiplo de 10 superior.
+    const MIN_PEDIDO = 4;
+
+    function redondearPedido(n) {
+        if (n <= 0) return 0;
+        if (n <= MIN_PEDIDO) return MIN_PEDIDO;
+        if (n < 10) return n % 2 === 0 ? n : n + 1;
+        return Math.ceil(n / 10) * 10;
+    }
+
+    // --- MEDIDA + MODELO desde una descripción de neumático ---
+    // Se usa para cruzar ofertas cuyo SKU de proveedor no coincide con el del stock.
+    // Ej: "205/60R16 FM601 92V FIREMAX" -> { medida:"205/60R16", modelo:"FM601" }
+    const RX_MODELO = /\b(FM\d{3}|KT\d{3,4}|ES\d{2}|HS\d{2}|TH\d{3}|TA\d{2}|TE\d{3}|TR\d{3}|HP\d{2}|PS\d{2,3}|PC\d{2}|KC\d{2}|MT\d{2}|DH\d{2}|DS[A-Z]?\d{2}|DU\w\d{2}|DL\d{2}|W\d{2}|T\d{2}|G\d{3})\b/i;
+    function medidaModelo(desc) {
+        const d = String(desc || '').toUpperCase();
+        const m = d.match(/(\d{3})\s*\/\s*(\d{2})\s*(?:Z\s*)?R?\s*(\d{2})/);
+        const medida = m ? `${m[1]}/${m[2]}R${m[3]}` : null;
+        const mod = d.match(RX_MODELO);
+        return { medida, modelo: mod ? mod[1].toUpperCase() : null };
+    }
+
+    // Etiqueta corta del origen de la oferta a partir del nombre de archivo ("...GRUPOA..." -> "Grupo A").
+    function etiquetaFuente(fuente) {
+        const f = String(fuente || '').toUpperCase();
+        const m = f.match(/GRUPO\s*([A-Z])/);
+        if (m) return 'Grupo ' + m[1];
+        return String(fuente || '').replace(/\.[^.]+$/, '');
     }
 
     // --- DROP ZONE SETUP ---
@@ -1594,59 +1704,123 @@ btnDownloadRestock.addEventListener('click', () => {
         });
     }
 
+    // Las zonas de lista de precios y oportunidades aceptan varios archivos a la vez.
+    function setupMultiZone(dropZone, fileInput, onFiles) {
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) onFiles(e.dataTransfer.files);
+        });
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length) onFiles(fileInput.files);
+        });
+    }
+
     setupPedidosZone(dropSales, fileSales, handleSalesFile);
     setupPedidosZone(dropStock, fileStock, handleStockFile);
+    setupMultiZone(dropPriceList, filePriceList, handlePriceListFiles);
+    setupMultiZone(dropOportun, fileOportun, handleOportunidadesFiles);
+    descListaInputs.concat(descOportInputs).forEach(inp => {
+        if (!inp) return;
+        inp.addEventListener('input', () => { if (priceListMap.size > 0) calcAndRender(); });
+    });
 
-    // --- PARSE VENTAS ---
+    // --- SKU de proveedor: puede venir con separador de miles ("60.698") -> normalizar a "60698" ---
+    function cleanSkuProveedor(raw) {
+        let s = String(raw === undefined || raw === null ? '' : raw).trim();
+        if (s.startsWith("'")) s = s.substring(1);
+        if (/^\d{1,3}(\.\d{3})+$/.test(s)) return s.replace(/\./g, '');   // 60.698 -> 60698
+        return cleanSkuP(s);
+    }
+
+    // Convierte un valor de celda "Fecha" (string ISO, Date o serial de Excel) a Date.
+    function parseFechaCell(v) {
+        if (v === undefined || v === null || v === '') return null;
+        if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+        if (typeof v === 'number') {
+            const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+            return isNaN(d.getTime()) ? null : d;
+        }
+        const s = String(v).trim();
+        const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+    }
+
+    // --- PARSE VENTAS (reporte_ventas: Fecha, Tipo, Código, Descripción, Categoría, Canal, Cantidad, Subtotal) ---
+    // Solo se toman las filas cuya Categoría contiene "radial" (neumáticos de auto/camioneta/camión).
     function handleSalesFile(file) {
         statusSales.textContent = 'Procesando...';
         const reader = new FileReader();
         reader.onload = function(e) {
             try {
                 const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-                const ws = wb.Sheets[wb.SheetNames[0]];
+                const wsName = wb.SheetNames.find(n => norm(n).includes('datos')) || wb.SheetNames[0];
+                const ws = wb.Sheets[wsName];
                 const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
-                let headerIdx = 5, skuIdx = 22, descIdx = 25, unitsIdx = 6;
-
-                for (let i = 0; i < Math.min(rows.length, 15); i++) {
+                let headerIdx = 0, fechaIdx = 0, skuIdx = 2, descIdx = 3, catIdx = 4, cantIdx = 6;
+                for (let i = 0; i < Math.min(rows.length, 10); i++) {
                     const row = rows[i];
                     if (!row || !Array.isArray(row)) continue;
-                    const cols = Array.from(row).map(c => String(c || '').toLowerCase().trim());
-                    const tSku   = cols.findIndex(c => c === 'sku' || c === 'código' || c === 'codigo');
-                    const tUnits = cols.findIndex(c => c === 'unidades' || c === 'cantidad' || c === 'cant');
-                    let   tDesc  = cols.findIndex(c => c && (c.includes('título') || c.includes('titulo')));
-                    if (tDesc === -1) tDesc = cols.findIndex(c => c && c.includes('descripción') && !c.includes('estado'));
-                    if (tSku !== -1 && tUnits !== -1) {
-                        headerIdx = i; skuIdx = tSku; unitsIdx = tUnits;
+                    const cols = Array.from(row).map(norm);
+                    const tSku  = cols.findIndex(c => c.includes('codigo'));
+                    const tCat  = cols.findIndex(c => c.includes('categoria'));
+                    const tCant = cols.findIndex(c => c.includes('cantidad'));
+                    if (tSku !== -1 && tCat !== -1 && tCant !== -1) {
+                        headerIdx = i; skuIdx = tSku; catIdx = tCat; cantIdx = tCant;
+                        const tFecha = cols.findIndex(c => c.includes('fecha'));
+                        if (tFecha !== -1) fechaIdx = tFecha;
+                        const tDesc = cols.findIndex(c => c.includes('descripcion'));
                         if (tDesc !== -1) descIdx = tDesc;
                         break;
                     }
                 }
 
                 salesMap = new Map();
-                let totalUnits = 0;
+                let totalUnits = 0, minFecha = null, maxFecha = null, filas = 0;
                 for (let i = headerIdx + 1; i < rows.length; i++) {
                     const row = rows[i];
                     if (!row || row.length === 0) continue;
-                    const sku   = cleanSkuP(row[skuIdx]);
-                    if (!sku) continue;
-                    const units = parseInt(row[unitsIdx]) || 0;
-                    if (units <= 0) continue;
+                    const categoria = String(row[catIdx] || '');
+                    if (!/radial/i.test(categoria)) continue;
+                    const rawSku = cleanSkuP(row[skuIdx]);
+                    if (!rawSku) continue;
+                    const cant = parseFloat(row[cantIdx]) || 0;
+                    if (cant === 0) continue;
+                    // Un kit se contabiliza como (unidades × N) del neumático base.
+                    const { sku, mult } = resolverKit(rawSku);
+                    const units = cant * mult;
                     const desc  = String(row[descIdx] !== undefined ? row[descIdx] : '').trim();
                     totalUnits += units;
+                    filas++;
+                    const fecha = parseFechaCell(row[fechaIdx]);
+                    if (fecha) { if (!minFecha || fecha < minFecha) minFecha = fecha; if (!maxFecha || fecha > maxFecha) maxFecha = fecha; }
                     const ex = salesMap.get(sku);
                     if (ex) { ex.unidades += units; if (!ex.descripcion && desc) ex.descripcion = desc; }
                     else salesMap.set(sku, { sku, descripcion: desc, unidades: units });
                 }
+                // Netear devoluciones: una fila negativa no puede dejar a un SKU con ventas negativas.
+                salesMap.forEach(v => { v.unidades = Math.max(0, v.unidades); });
+
+                if (minFecha && maxFecha) {
+                    const dias = Math.max(1, Math.round((maxFecha - minFecha) / 86400000) + 1);
+                    salesPeriodMonths = Math.max(0.5, dias / 30.4368);
+                } else {
+                    salesPeriodMonths = 2;
+                }
 
                 dropSales.classList.add('drag-over');
-                statusSales.textContent = `✓ ${file.name} — ${salesMap.size} SKUs, ${totalUnits} uds.`;
+                statusSales.textContent = `✓ ${file.name} — ${salesMap.size} SKUs, ${fmt(totalUnits)} uds. (${salesPeriodMonths.toFixed(1)}m)`;
                 statusSales.classList.add('uploaded');
                 tryRenderPedidos();
             } catch(err) {
                 console.error(err);
-                Swal.fire('Error', 'No se pudo leer el archivo de ventas: ' + err.message, 'error');
+                Swal.fire('Error', 'No se pudo leer el reporte de ventas: ' + err.message, 'error');
                 statusSales.textContent = 'Error al leer';
             }
         };
@@ -1718,58 +1892,273 @@ btnDownloadRestock.addEventListener('click', () => {
         reader.readAsArrayBuffer(file);
     }
 
+    // --- PARSE LISTA DE PRECIOS (uno o varios excels, 1 hoja por marca) ---
+    // Columnas por hoja: Codigo, Sección, Perfil, Tipo, Llanta, Diseño, Telas, PRECIO.
+    // La marca sale del nombre de la hoja. Se ignoran las hojas sin ese encabezado (portada, hojas de costos internas, etc.)
+    function handlePriceListFiles(fileList) {
+        const files = Array.from(fileList);
+        statusPriceList.textContent = 'Procesando...';
+        let done = 0, totalNuevas = 0, hojasOk = 0, errores = 0;
+
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                    wb.SheetNames.forEach(sheetName => {
+                        const ws = wb.Sheets[sheetName];
+                        const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+                        let hIdx = -1, codIdx = -1, seccIdx = -1, perfilIdx = -1, llantaIdx = -1, disenoIdx = -1, precioIdx = -1;
+                        for (let i = 0; i < Math.min(rows.length, 12); i++) {
+                            const row = rows[i];
+                            if (!row || !Array.isArray(row)) continue;
+                            const cols = Array.from(row).map(norm);
+                            const tCod = cols.findIndex(c => c.includes('codigo'));
+                            const tPre = cols.findIndex(c => c.startsWith('precio'));
+                            if (tCod !== -1 && tPre !== -1) {
+                                hIdx = i; codIdx = tCod; precioIdx = tPre;
+                                seccIdx   = cols.findIndex(c => c.startsWith('secc'));
+                                perfilIdx = cols.findIndex(c => c.startsWith('perfil'));
+                                llantaIdx = cols.findIndex(c => c.startsWith('llant'));
+                                disenoIdx = cols.findIndex(c => c.startsWith('diseno'));
+                                break;
+                            }
+                        }
+                        if (hIdx === -1) return;   // hoja sin lista de precios (portada, hoja de costos, etc.)
+
+                        const marca = String(sheetName || '').trim();
+                        let nuevas = 0;
+                        for (let i = hIdx + 1; i < rows.length; i++) {
+                            const row = rows[i];
+                            if (!row || row.length === 0) continue;
+                            const sku = cleanSkuProveedor(row[codIdx]);
+                            if (!sku || !/\d/.test(sku)) continue;
+                            const precioBase = parseFloat(row[precioIdx]) || 0;
+                            if (precioBase <= 0) continue;
+                            const secc   = seccIdx   !== -1 ? String(row[seccIdx]   !== undefined ? row[seccIdx]   : '').trim().split('.')[0] : '';
+                            const perfil = perfilIdx !== -1 ? String(row[perfilIdx] !== undefined ? row[perfilIdx] : '').trim().split('.')[0] : '';
+                            const llanta = llantaIdx !== -1 ? String(row[llantaIdx] !== undefined ? row[llantaIdx] : '').trim() : '';
+                            const modelo = disenoIdx !== -1 ? String(row[disenoIdx] !== undefined ? row[disenoIdx] : '').trim().toUpperCase() : '';
+                            let medida = null;
+                            if (secc && llanta) medida = perfil ? `${secc}/${perfil}R${llanta}` : `${secc}R${llanta}`;
+                            priceListMap.set(sku, { sku, marca, medida, modelo, precioBase, fuente: file.name });
+                            nuevas++;
+                        }
+                        if (nuevas > 0) { totalNuevas += nuevas; hojasOk++; }
+                    });
+                } catch(err) {
+                    console.error('Lista de precios ' + file.name, err);
+                    errores++;
+                } finally {
+                    done++;
+                    if (done === files.length) finalizePriceList(totalNuevas, hojasOk, errores);
+                }
+            };
+            reader.onerror = function() { done++; errores++; if (done === files.length) finalizePriceList(totalNuevas, hojasOk, errores); };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function finalizePriceList(nuevas, hojasOk, errores) {
+        const msg = `✓ ${priceListMap.size} SKUs en ${hojasOk} hoja/s de marca` + (errores ? ` (${errores} archivo/s con error)` : '');
+        statusPriceList.textContent = msg;
+        statusPriceList.classList.add('uploaded');
+        dropPriceList.classList.add('drag-over');
+        tryRenderPedidos();
+    }
+
+    // --- PARSE OPORTUNIDADES (una o varias listas del proveedor, formato Guerrini GRUPOA/GRUPOB) ---
+    // El precio de la columna OPORTUNIDADES es el precio de lista del ítem en oferta; el descuento
+    // configurado ("Descuento Oportunidades") se aplica en calcAndRender, no acá.
+    function handleOportunidadesFiles(fileList) {
+        const files = Array.from(fileList);
+        statusOportun.textContent = 'Procesando...';
+        let done = 0, totalNuevas = 0, errores = 0;
+
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                    const ws = wb.Sheets[wb.SheetNames[0]];
+                    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+                    let hIdx = -1, artIdx = 0, diamIdx = -1, seccIdx = -1, llanIdx = -1, disenoIdx = -1, precioIdx = -1;
+                    for (let i = 0; i < Math.min(rows.length, 20); i++) {
+                        const row = rows[i];
+                        if (!row || !Array.isArray(row)) continue;
+                        const cols = Array.from(row).map(norm);
+                        const tArt = cols.findIndex(c => c.includes('articulo'));
+                        const tPre = cols.findIndex(c => c.includes('oportunidad'));
+                        if (tArt !== -1 && tPre !== -1) {
+                            hIdx = i; artIdx = tArt; precioIdx = tPre;
+                            diamIdx   = cols.findIndex(c => c.startsWith('diam'));
+                            seccIdx   = cols.findIndex(c => c.startsWith('secc'));
+                            llanIdx   = cols.findIndex(c => c.startsWith('llan'));
+                            disenoIdx = cols.findIndex(c => c.startsWith('diseno'));
+                            break;
+                        }
+                    }
+                    if (hIdx === -1) throw new Error('no se encontró el encabezado (Articulo / OPORTUNIDADES)');
+
+                    let nuevas = 0;
+                    for (let i = hIdx + 1; i < rows.length; i++) {
+                        const row = rows[i];
+                        if (!row || row.length === 0) continue;
+                        const sku = cleanSkuProveedor(row[artIdx]);
+                        if (!sku || !/\d/.test(sku)) continue;
+                        const precioBase = parseFloat(row[precioIdx]) || 0;
+                        if (precioBase <= 0) continue;
+                        const diam = String(row[diamIdx] !== undefined ? row[diamIdx] : '').trim().split('.')[0];
+                        const secc = String(row[seccIdx] !== undefined ? row[seccIdx] : '').trim().split('.')[0];
+                        const llan = String(row[llanIdx] !== undefined ? row[llanIdx] : '').trim().split('.')[0];
+                        const modelo = String(row[disenoIdx] !== undefined ? row[disenoIdx] : '').trim().toUpperCase();
+                        const medida = (diam && secc && llan) ? `${diam}/${secc}R${llan}` : null;
+                        offersBySku.set(sku, { precioBase, medida, modelo, fuente: file.name });
+                        nuevas++;
+                    }
+                    totalNuevas += nuevas;
+                } catch(err) {
+                    console.error('Oportunidad ' + file.name, err);
+                    errores++;
+                } finally {
+                    done++;
+                    if (done === files.length) finalizeOportunidades(totalNuevas, errores);
+                }
+            };
+            reader.onerror = function() { done++; errores++; if (done === files.length) finalizeOportunidades(totalNuevas, errores); };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    function finalizeOportunidades(nuevas, errores) {
+        const msg = `✓ ${offersBySku.size} oportunidades cargadas` + (errores ? ` (${errores} archivo/s con error)` : '');
+        statusOportun.textContent = msg;
+        statusOportun.classList.add('uploaded');
+        dropOportun.classList.add('drag-over');
+        tryRenderPedidos();
+    }
+
     // --- CALCULAR Y RENDERIZAR ---
+    // Universo de filas = todos los SKUs de la lista de precios, más los SKUs de ventas/stock
+    // que sean neumáticos aunque no estén en ninguna lista de precios cargada.
     function tryRenderPedidos() {
-        if (!salesMap || !stockMap) return;
+        if (priceListMap.size === 0 && !salesMap && !stockMap) return;
         calcAndRender();
     }
 
     function calcAndRender() {
         const M = parseFloat(mesesInput.value) || 2;
-        const allSkus = new Set([...salesMap.keys(), ...stockMap.keys()]);
-        pedidosResults = [];
+        const monthsSales = salesPeriodMonths || 2;
+        const descLista = descuentoCombinado(descListaInputs);
+        const descOport = descuentoCombinado(descOportInputs);
 
+        const allSkus = new Set(priceListMap.keys());
+        if (salesMap) salesMap.forEach((_, sku) => allSkus.add(sku));
+        if (stockMap) stockMap.forEach((v, sku) => { if (esNeumatico(v.descripcion)) allSkus.add(sku); });
+
+        pedidosResults = [];
         allSkus.forEach(sku => {
-            const sale  = salesMap.get(sku)  || { unidades: 0, descripcion: '' };
-            const stock = stockMap.get(sku)  || { descripcion: '', cgil: 0, sMarzo: 0, sMarzo1435: 0, full: 0, costo: 0 };
-            const desc        = stock.descripcion || sale.descripcion || '—';
-            const totalSold   = sale.unidades;
-            const monthly     = totalSold / 2;
-            const totalStock  = stock.cgil + stock.sMarzo + stock.sMarzo1435 + stock.full;
-            const costo       = stock.costo;
-            const recommended = Math.max(0, Math.ceil(monthly * M - totalStock));
+            const priceRec = priceListMap.get(sku) || null;
+            const oport    = offersBySku.get(sku)  || null;
+            const stock    = stockMap ? stockMap.get(sku) : null;
+            const sale     = salesMap ? salesMap.get(sku) : null;
+
+            let desc = (stock && stock.descripcion) || (sale && sale.descripcion) || '';
+            let medida = priceRec && priceRec.medida;
+            let modelo = priceRec && priceRec.modelo;
+            if (!medida || !modelo) {
+                const mm = medidaModelo(desc);
+                medida = medida || mm.medida;
+                modelo = modelo || mm.modelo;
+            }
+            const marca = (priceRec && priceRec.marca) || '';
+            // Sin descripción propia (típico de SKUs que solo están en la lista de precios, sin ventas/stock):
+            // se arma con medida + modelo + marca en vez de dejarla vacía.
+            if (!desc) desc = [medida, modelo, marca].filter(Boolean).join(' ') || '—';
+
+            const precioLista       = (priceRec && priceRec.precioBase > 0) ? priceRec.precioBase * descLista : 0;
+            const precioOportunidad = (oport && oport.precioBase > 0) ? oport.precioBase * descOport : 0;
+            const enOferta = precioOportunidad > 0;
+            const costoStock = stock ? stock.costo : 0;
+            // Prioridad de precio: oportunidad (reemplaza) > lista de precios > costo del reporte de stock (fallback).
+            const costo = enOferta ? precioOportunidad : (precioLista > 0 ? precioLista : costoStock);
+
+            const sucursales = stock ? (stock.cgil + stock.sMarzo + stock.sMarzo1435) : 0;
+            const full       = stock ? stock.full : 0;
+            const totalStock = sucursales + full;
+            const totalSold  = sale ? sale.unidades : 0;
+
+            // Ruido: SKU que no está en ninguna lista de precios (no se puede pedir), no tuvo ventas
+            // y no tiene stock en ningún lado -> no aporta nada, no vale la pena mostrarlo.
+            if (!priceRec && !sale && totalStock === 0) return;
+
+            const monthly    = totalSold / monthsSales;
+            const needed      = stock ? Math.max(0, Math.ceil(monthly * M - totalStock)) : 0;
+            const recommended = stock ? redondearPedido(needed) : 0;
             const investment  = recommended * costo;
-            pedidosResults.push({ sku, desc, totalSold, cgil: stock.cgil, sMarzo: stock.sMarzo, sMarzo1435: stock.sMarzo1435, full: stock.full, totalStock, recommended, costo, investment });
+
+            pedidosResults.push({
+                sku, desc, marca, medida, modelo,
+                totalSold, sucursales, full, totalStock,
+                hasStock: !!stock, hasSales: !!sale,
+                needed, recommended, costo, costoStock, precioLista, precioOportunidad, investment,
+                enOferta, ofertaFuente: oport ? etiquetaFuente(oport.fuente) : ''
+            });
         });
 
-        pedidosResults.sort((a, b) => b.recommended - a.recommended || b.totalSold - a.totalSold);
+        // Orden principal: por medida (ancho/perfil/llanta numérico); dentro de la misma medida, por marca y modelo.
+        pedidosResults.sort((a, b) =>
+            compararMedida(a.medida, b.medida) ||
+            a.marca.localeCompare(b.marca) ||
+            String(a.modelo || '').localeCompare(String(b.modelo || '')) ||
+            a.sku.localeCompare(b.sku)
+        );
 
         // Stats
         const toOrder     = pedidosResults.filter(r => r.recommended > 0);
         const totalUnits  = toOrder.reduce((s, r) => s + r.recommended, 0);
         const totalInv    = toOrder.reduce((s, r) => s + r.investment, 0);
-        const totalVentas = [...salesMap.values()].reduce((s, v) => s + v.unidades, 0);
+        const totalVentas = pedidosResults.reduce((s, r) => s + r.totalSold, 0);
+        const enOfertaCount = pedidosResults.filter(r => r.enOferta).length;
 
-        document.getElementById('pedidos-stat-skus').textContent     = pedidosResults.length;
-        document.getElementById('pedidos-stat-ventas').textContent   = fmt(totalVentas);
-        document.getElementById('pedidos-stat-unidades').textContent = fmt(totalUnits);
-        document.getElementById('pedidos-stat-inversion').textContent= '$' + fmt(totalInv);
+        document.getElementById('pedidos-stat-skus').textContent      = pedidosResults.length;
+        document.getElementById('pedidos-stat-ventas').textContent    = fmt(totalVentas);
+        document.getElementById('pedidos-stat-unidades').textContent  = fmt(totalUnits);
+        document.getElementById('pedidos-stat-inversion').textContent = '$' + fmt(totalInv);
+        const statOferta = document.getElementById('pedidos-stat-oferta');
+        if (statOferta) statOferta.textContent = fmt(enOfertaCount);
+        const statPeriodo = document.getElementById('pedidos-stat-periodo');
+        if (statPeriodo) statPeriodo.textContent = salesMap ? `${monthsSales.toFixed(1)} m` : '—';
 
         // Tabla
         resultsBody.innerHTML = '';
         pedidosResults.forEach(item => {
             const tr = document.createElement('tr');
-            if (item.recommended > 0) tr.style.borderLeft = '3px solid #22c55e';
+            if (item.enOferta) tr.style.borderLeft = '3px solid #a855f7';
+            else if (item.recommended > 0) tr.style.borderLeft = '3px solid #22c55e';
+
+            let ofertaCell;
+            if (item.enOferta) {
+                const ahorro = item.precioLista > 0 ? Math.round((item.precioOportunidad / item.precioLista - 1) * 100) : null;
+                const tip = (ahorro !== null ? `Precio de oportunidad vs. lista: ${ahorro >= 0 ? '+' : ''}${ahorro}% — ` : 'Precio de oportunidad — ') + (item.ofertaFuente || 'proveedor') + '. Reemplaza al precio de lista.';
+                ofertaCell = `<span title="${tip}" style="display:inline-block; padding:2px 8px; border-radius:10px; background:rgba(168,85,247,0.15); color:#a855f7; font-weight:600; font-size:0.8rem;"><i class="fa-solid fa-tags"></i> En oferta</span>`;
+            } else {
+                ofertaCell = '<span style="color:var(--text-secondary);">—</span>';
+            }
+
             tr.innerHTML = `
                 <td><strong>${item.sku}</strong></td>
+                <td style="text-align:center;">${item.medida || '—'}</td>
+                <td>${item.marca || '—'}</td>
+                <td>${item.modelo || '—'}</td>
                 <td style="font-size:0.82rem; color:var(--text-secondary);">${item.desc}</td>
-                <td style="text-align:center;">${item.totalSold}</td>
-                <td style="text-align:center;">${item.cgil}</td>
-                <td style="text-align:center;">${item.sMarzo}</td>
-                <td style="text-align:center;">${item.sMarzo1435}</td>
-                <td style="text-align:center;">${item.full}</td>
-                <td style="text-align:center;"><strong>${item.totalStock}</strong></td>
-                <td style="text-align:center;"><strong style="color:${item.recommended > 0 ? '#22c55e' : 'inherit'};">${item.recommended}</strong></td>
+                <td style="text-align:center;">${item.hasSales ? item.totalSold : '—'}</td>
+                <td style="text-align:center;">${item.hasStock ? item.sucursales : '—'}</td>
+                <td style="text-align:center;">${item.hasStock ? item.full : '—'}</td>
+                <td style="text-align:center;" title="${item.recommended > 0 ? `Necesidad calculada: ${item.needed} — redondeado a ${item.recommended}` : ''}"><strong style="color:${item.recommended > 0 ? '#22c55e' : 'inherit'};">${item.recommended || '—'}</strong></td>
+                <td style="text-align:center;">${ofertaCell}</td>
                 <td style="text-align:center;">${item.costo > 0 ? '$' + fmt(item.costo) : '—'}</td>
                 <td style="text-align:center;">${item.investment > 0 ? '$' + fmt(item.investment) : '—'}</td>
             `;
@@ -1780,38 +2169,40 @@ btnDownloadRestock.addEventListener('click', () => {
     }
 
     // Recalcular al cambiar meses
-    mesesInput.addEventListener('change', () => { if (salesMap && stockMap) calcAndRender(); });
-    mesesInput.addEventListener('input',  () => { if (salesMap && stockMap) calcAndRender(); });
+    mesesInput.addEventListener('change', tryRenderPedidos);
+    mesesInput.addEventListener('input',  tryRenderPedidos);
 
     // --- EXPORTAR EXCEL ---
     btnDownload.addEventListener('click', () => {
-        const toOrder = pedidosResults.filter(r => r.recommended > 0);
-        if (toOrder.length === 0) {
-            Swal.fire('Sin pedidos', 'No hay neumáticos que requieran compra con la cobertura actual.', 'info');
+        if (pedidosResults.length === 0) {
+            Swal.fire('Sin datos', 'Cargá al menos la lista de precios para generar el Excel.', 'info');
             return;
         }
         const M = parseFloat(mesesInput.value) || 2;
-        const data = toOrder.map(item => ({
+        const data = pedidosResults.map(item => ({
             'SKU': item.sku,
+            'Medida': item.medida || '',
+            'Marca': item.marca || '',
+            'Modelo': item.modelo || '',
             'Descripción': item.desc,
-            'Ventas (2 meses)': item.totalSold,
-            'Stock Coronel Gil': item.cgil,
-            'Stock Santiago Marzo': item.sMarzo,
-            'Stock Santiago Marzo 1435': item.sMarzo1435,
-            'Stock ML Full': item.full,
-            'Stock Total': item.totalStock,
-            'Cantidad a Comprar': item.recommended,
-            'Costo Unitario (ARS)': item.costo || '',
-            'Inversión Total (ARS)': item.investment || ''
+            'Ventas': item.hasSales ? item.totalSold : '',
+            'Total Sucursales': item.hasStock ? item.sucursales : '',
+            'Stock ML Full': item.hasStock ? item.full : '',
+            'Cantidad a Comprar': item.recommended || '',
+            'Precio Lista (con descuento)': item.precioLista || '',
+            'En Oferta': item.enOferta ? `Sí (${item.ofertaFuente})` : '',
+            'Precio Oferta (con descuento)': item.enOferta ? item.precioOportunidad : '',
+            'Costo Usado (ARS)': item.costo || '',
+            'Inversión (ARS)': item.investment || ''
         }));
         const ws = XLSX.utils.json_to_sheet(data);
         ws['!cols'] = [
-            {wch:15},{wch:45},{wch:16},{wch:18},{wch:20},{wch:22},{wch:16},{wch:14},{wch:18},{wch:20},{wch:20}
+            {wch:12},{wch:16},{wch:14},{wch:14},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:22},{wch:16},{wch:16}
         ];
         const wbOut = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wbOut, ws, 'Plan de Pedido');
+        XLSX.utils.book_append_sheet(wbOut, ws, 'Lista de Precios');
         const dateStr = new Date().toISOString().split('T')[0];
-        XLSX.writeFile(wbOut, `Plan_de_Pedido_Neumaticos_${M}m_${dateStr}.xlsx`);
+        XLSX.writeFile(wbOut, `Lista_de_Precios_Neumaticos_${M}m_${dateStr}.xlsx`);
     });
 })();
 

@@ -2058,7 +2058,11 @@ btnDownloadRestock.addEventListener('click', () => {
         if (salesMap) salesMap.forEach((_, sku) => allSkus.add(sku));
         if (stockMap) stockMap.forEach((v, sku) => { if (esNeumatico(v.descripcion)) allSkus.add(sku); });
 
-        pedidosResults = [];
+        // Guerrini a veces lista la misma cubierta (misma medida+marca+modelo) bajo dos códigos de
+        // artículo distintos. Se agrupan por esa identidad para no duplicar la fila; dentro del grupo
+        // se suman las cantidades (ventas/stock pueden estar repartidas entre los dos códigos viejos)
+        // y se elige un solo precio representante.
+        const groups = new Map();   // key -> array de candidatos
         allSkus.forEach(sku => {
             const priceRec = priceListMap.get(sku) || null;
             const oport    = offersBySku.get(sku)  || null;
@@ -2082,8 +2086,6 @@ btnDownloadRestock.addEventListener('click', () => {
             const precioOportunidad = (oport && oport.precioBase > 0) ? oport.precioBase * descOport : 0;
             const enOferta = precioOportunidad > 0;
             const costoStock = stock ? stock.costo : 0;
-            // Prioridad de precio: oportunidad (reemplaza) > lista de precios > costo del reporte de stock (fallback).
-            const costo = enOferta ? precioOportunidad : (precioLista > 0 ? precioLista : costoStock);
 
             const sucursales = stock ? (stock.cgil + stock.sMarzo + stock.sMarzo1435) : 0;
             const full       = stock ? stock.full : 0;
@@ -2094,17 +2096,60 @@ btnDownloadRestock.addEventListener('click', () => {
             // y no tiene stock en ningún lado -> no aporta nada, no vale la pena mostrarlo.
             if (!priceRec && !sale && totalStock === 0) return;
 
-            const monthly    = totalSold / monthsSales;
-            const needed      = stock ? Math.max(0, Math.ceil(monthly * M - totalStock)) : 0;
-            const recommended = stock ? redondearPedido(needed) : 0;
-            const investment  = recommended * costo;
+            // La identidad del grupo se toma de la lista de precios (medida+marca+modelo tal cual la
+            // cargó Guerrini), no de la medida/modelo detectados por fallback, para no agrupar por error.
+            const groupKey = (priceRec && priceRec.marca && priceRec.medida && priceRec.modelo)
+                ? `${priceRec.medida}|${priceRec.marca}|${priceRec.modelo}`.toUpperCase()
+                : `sku:${sku}`;
 
-            pedidosResults.push({
+            const candidate = {
                 sku, desc, marca, medida, modelo,
                 totalSold, sucursales, full, totalStock,
                 hasStock: !!stock, hasSales: !!sale,
-                needed, recommended, costo, costoStock, precioLista, precioOportunidad, investment,
-                enOferta, ofertaFuente: oport ? etiquetaFuente(oport.fuente) : ''
+                precioLista, precioOportunidad, enOferta, costoStock,
+                ofertaFuente: oport ? etiquetaFuente(oport.fuente) : ''
+            };
+            if (!groups.has(groupKey)) groups.set(groupKey, []);
+            groups.get(groupKey).push(candidate);
+        });
+
+        pedidosResults = [];
+        groups.forEach(list => {
+            const totalSold   = list.reduce((s, r) => s + r.totalSold, 0);
+            const sucursales  = list.reduce((s, r) => s + r.sucursales, 0);
+            const full        = list.reduce((s, r) => s + r.full, 0);
+            const totalStock  = sucursales + full;
+            const hasStock    = list.some(r => r.hasStock);
+            const hasSales    = list.some(r => r.hasSales);
+
+            // Precio representante del grupo: la oportunidad más barata si hay alguna; si no,
+            // el precio de lista más barato; si ninguno tiene precio, queda sin precio (fallback a costo de stock).
+            const conOferta = list.filter(r => r.enOferta);
+            const conLista  = list.filter(r => r.precioLista > 0);
+            let winner;
+            if (conOferta.length) winner = conOferta.reduce((a, b) => a.precioOportunidad <= b.precioOportunidad ? a : b);
+            else if (conLista.length) winner = conLista.reduce((a, b) => a.precioLista <= b.precioLista ? a : b);
+            else winner = list[0];
+
+            const costoStockFallback = Math.max(0, ...list.map(r => r.costoStock));
+            const enOferta = !!winner.enOferta;
+            const precioLista = winner.precioLista;
+            const precioOportunidad = winner.precioOportunidad;
+            // Prioridad de precio: oportunidad (reemplaza) > lista de precios > costo del reporte de stock (fallback).
+            const costo = enOferta ? precioOportunidad : (precioLista > 0 ? precioLista : costoStockFallback);
+            const fuentePrecio = enOferta ? 'Oportunidad' : (precioLista > 0 ? 'Lista de Precios' : (costoStockFallback > 0 ? 'Costo de stock' : ''));
+            const skusAlt = list.filter(r => r !== winner).map(r => r.sku);
+
+            const monthly     = totalSold / monthsSales;
+            const needed      = hasStock ? Math.max(0, Math.ceil(monthly * M - totalStock)) : 0;
+            const recommended = hasStock ? redondearPedido(needed) : 0;
+            const investment  = recommended * costo;
+
+            pedidosResults.push({
+                sku: winner.sku, skusAlt, desc: winner.desc, marca: winner.marca, medida: winner.medida, modelo: winner.modelo,
+                totalSold, sucursales, full, totalStock, hasStock, hasSales,
+                needed, recommended, costo, costoStock: costoStockFallback, precioLista, precioOportunidad, investment,
+                enOferta, ofertaFuente: winner.ofertaFuente, fuentePrecio
             });
         });
 
@@ -2148,8 +2193,10 @@ btnDownloadRestock.addEventListener('click', () => {
                 ofertaCell = '<span style="color:var(--text-secondary);">—</span>';
             }
 
+            const skuTip = item.skusAlt && item.skusAlt.length ? `También listado con el/los código/s: ${item.skusAlt.join(', ')} (se unificó por ser la misma medida/marca/modelo).` : '';
+
             tr.innerHTML = `
-                <td><strong>${item.sku}</strong></td>
+                <td><strong title="${skuTip}">${item.sku}${item.skusAlt && item.skusAlt.length ? ' <i class="fa-solid fa-circle-info" style="font-size:0.7rem; opacity:0.6;"></i>' : ''}</strong></td>
                 <td style="text-align:center;">${item.medida || '—'}</td>
                 <td>${item.marca || '—'}</td>
                 <td>${item.modelo || '—'}</td>
@@ -2160,6 +2207,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 <td style="text-align:center;" title="${item.recommended > 0 ? `Necesidad calculada: ${item.needed} — redondeado a ${item.recommended}` : ''}"><strong style="color:${item.recommended > 0 ? '#22c55e' : 'inherit'};">${item.recommended || '—'}</strong></td>
                 <td style="text-align:center;">${ofertaCell}</td>
                 <td style="text-align:center;">${item.costo > 0 ? '$' + fmt(item.costo) : '—'}</td>
+                <td style="text-align:center; font-size:0.78rem; color:var(--text-secondary);">${item.fuentePrecio || '—'}</td>
                 <td style="text-align:center;">${item.investment > 0 ? '$' + fmt(item.investment) : '—'}</td>
             `;
             resultsBody.appendChild(tr);
@@ -2193,13 +2241,15 @@ btnDownloadRestock.addEventListener('click', () => {
             'En Oferta': item.enOferta ? `Sí (${item.ofertaFuente})` : '',
             'Precio Oferta (con descuento)': item.enOferta ? item.precioOportunidad : '',
             'Costo Usado (ARS)': item.costo || '',
+            'Precio Usado': item.fuentePrecio || '',
+            'Otros Códigos (misma medida/marca/modelo)': (item.skusAlt && item.skusAlt.length) ? item.skusAlt.join(', ') : '',
             'Inversión (ARS)': item.investment || ''
         }));
         // xlsx-js-style (si cargó) permite colorear filas; si no está disponible se exporta sin color.
         const XLib = (typeof XLSXStyle !== 'undefined' && XLSXStyle) ? XLSXStyle : XLSX;
         const ws = XLib.utils.json_to_sheet(data);
         ws['!cols'] = [
-            {wch:12},{wch:16},{wch:14},{wch:14},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:22},{wch:16},{wch:16}
+            {wch:12},{wch:16},{wch:14},{wch:14},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:22},{wch:16},{wch:16},{wch:32},{wch:16}
         ];
 
         // Bandas de color por grupo de medida: todas las filas de la misma medida comparten color,

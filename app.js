@@ -2195,14 +2195,33 @@ btnDownloadRestock.addEventListener('click', () => {
             'Costo Usado (ARS)': item.costo || '',
             'Inversión (ARS)': item.investment || ''
         }));
-        const ws = XLSX.utils.json_to_sheet(data);
+        // xlsx-js-style (si cargó) permite colorear filas; si no está disponible se exporta sin color.
+        const XLib = (typeof XLSXStyle !== 'undefined' && XLSXStyle) ? XLSXStyle : XLSX;
+        const ws = XLib.utils.json_to_sheet(data);
         ws['!cols'] = [
             {wch:12},{wch:16},{wch:14},{wch:14},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:22},{wch:16},{wch:16}
         ];
-        const wbOut = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wbOut, ws, 'Lista de Precios');
+
+        // Bandas de color por grupo de medida: todas las filas de la misma medida comparten color,
+        // alternando entre 2 tonos para que se note dónde empieza el grupo siguiente.
+        if (XLib === XLSXStyle) {
+            const FILL_COLORS = ['FFFFFF', 'DDEBF7'];
+            const numCols = Object.keys(data[0] || {}).length;
+            let lastMedida = null, colorIdx = -1;
+            pedidosResults.forEach((item, i) => {
+                const medidaKey = item.medida || ' sin-medida';
+                if (medidaKey !== lastMedida) { colorIdx = (colorIdx + 1) % FILL_COLORS.length; lastMedida = medidaKey; }
+                for (let c = 0; c < numCols; c++) {
+                    const addr = XLib.utils.encode_cell({ r: i + 1, c });
+                    if (ws[addr]) ws[addr].s = { fill: { fgColor: { rgb: FILL_COLORS[colorIdx] } } };
+                }
+            });
+        }
+
+        const wbOut = XLib.utils.book_new();
+        XLib.utils.book_append_sheet(wbOut, ws, 'Lista de Precios');
         const dateStr = new Date().toISOString().split('T')[0];
-        XLSX.writeFile(wbOut, `Lista_de_Precios_Neumaticos_${M}m_${dateStr}.xlsx`);
+        XLib.writeFile(wbOut, `Lista_de_Precios_Neumaticos_${M}m_${dateStr}.xlsx`);
     });
 })();
 

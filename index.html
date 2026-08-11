@@ -17,7 +17,17 @@
     
     <!-- SheetJS for Excel processing -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    
+
+    <!-- xlsx-js-style: fork de SheetJS con soporte de estilos (colores de celda) para el Excel de Pedidos.
+         Se carga aparte y se restaura window.XLSX a la versión de arriba para no afectar el resto de la app. -->
+    <script>window.__XLSX_READ__ = window.XLSX;</script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
+    <script>
+        window.XLSXStyle = window.XLSX;
+        window.XLSX = window.__XLSX_READ__;
+        delete window.__XLSX_READ__;
+    </script>
+
     <!-- SweetAlert for nice alerts -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 </head>

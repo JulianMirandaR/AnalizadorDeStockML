@@ -1938,10 +1938,12 @@ btnDownloadRestock.addEventListener('click', () => {
                             const tPre = cols.findIndex(c => c.startsWith('precio'));
                             if (tCod !== -1 && tPre !== -1) {
                                 hIdx = i; codIdx = tCod; precioIdx = tPre;
-                                seccIdx   = cols.findIndex(c => c.startsWith('secc'));
+                                // Algunas hojas (ej. Doublestar) usan otros nombres: SIZE (medida junta "165/70"),
+                                // RIM (llanta) y PTTN (diseño) en vez de Sección/Llanta/Diseño.
+                                seccIdx   = cols.findIndex(c => c.startsWith('secc') || c.startsWith('size') || c.startsWith('medida'));
                                 perfilIdx = cols.findIndex(c => c.startsWith('perfil'));
-                                llantaIdx = cols.findIndex(c => c.startsWith('llant'));
-                                disenoIdx = cols.findIndex(c => c.startsWith('diseno'));
+                                llantaIdx = cols.findIndex(c => c.startsWith('llant') || c.startsWith('rim') || c.startsWith('rodado'));
+                                disenoIdx = cols.findIndex(c => c.startsWith('diseno') || c.startsWith('pttn') || c.startsWith('dibujo'));
                                 break;
                             }
                         }
@@ -1956,8 +1958,19 @@ btnDownloadRestock.addEventListener('click', () => {
                             if (!sku || !/\d/.test(sku)) continue;
                             const precioBase = parseFloat(row[precioIdx]) || 0;
                             if (precioBase <= 0) continue;
-                            const secc   = seccIdx   !== -1 ? String(row[seccIdx]   !== undefined ? row[seccIdx]   : '').trim().split('.')[0] : '';
-                            const perfil = perfilIdx !== -1 ? String(row[perfilIdx] !== undefined ? row[perfilIdx] : '').trim().split('.')[0] : '';
+                            // La sección puede venir sola ("165") o junta con el perfil en la columna SIZE ("165/70").
+                            let secc = '', perfil = '';
+                            if (seccIdx !== -1) {
+                                const raw = String(row[seccIdx] !== undefined ? row[seccIdx] : '').trim();
+                                if (raw.includes('/')) {
+                                    const parts = raw.split('/');
+                                    secc   = parts[0].trim().split('.')[0];
+                                    perfil = (parts[1] || '').trim().split('.')[0];
+                                } else {
+                                    secc = raw.split('.')[0];
+                                }
+                            }
+                            if (!perfil && perfilIdx !== -1) perfil = String(row[perfilIdx] !== undefined ? row[perfilIdx] : '').trim().split('.')[0];
                             const llanta = llantaIdx !== -1 ? String(row[llantaIdx] !== undefined ? row[llantaIdx] : '').trim() : '';
                             const modelo = disenoIdx !== -1 ? String(row[disenoIdx] !== undefined ? row[disenoIdx] : '').trim().toUpperCase() : '';
                             let medida = null;

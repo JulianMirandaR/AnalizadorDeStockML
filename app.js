@@ -1685,7 +1685,7 @@ btnDownloadRestock.addEventListener('click', () => {
     // Una misma medida puede tener los dos tipos (ej. 265/65R17 lisa y con tacos) y no son
     // intercambiables. Se detecta por la descripción. Si dice HT/HP (Highway) es lisa aunque
     // el nombre suene offroad (ej. "Wrangler Fortitude HT").
-    const RX_TACO = /(\bA\/?T\b|\bM\/?T\b|\bR\/?T\b|ALL\s*TERRAIN|\bMUD\b|\bATR\b|\bAT\d{1,2}\b|\bMT\d{1,2}\b|GEOLANDAR|WRANGLER|OPEN\s*COUNTRY\s*A|ROAD\s*VENTURE|\bTR292\b)/i;
+    const RX_TACO = /(\bA\/?T\b|\bM\/?T\b|\bR\/?T\b|ALL\s*TERRAIN|\bMUD\b|\bATR\b|\bAT\d{1,2}\b|\bMT\d{1,2}\b|\bKL7\d\b|\bFM501\b|\bFM523\b|\bG01[58]\b|GEOLANDAR|WRANGLER|OPEN\s*COUNTRY\s*A|ROAD\s*VENTURE|\bTR292\b)/i;
     const RX_HIGHWAY = /(\bH\/?T\b|\bH\/?P\b)/i;
     function dibujoDeDesc(desc) {
         const d = String(desc || '');

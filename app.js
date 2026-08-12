@@ -1681,6 +1681,18 @@ btnDownloadRestock.addEventListener('click', () => {
         return { medida, modelo: mod ? mod[1].toUpperCase() : null };
     }
 
+    // --- DIBUJO: lisa (calle/highway) vs taco (todoterreno AT/MT) ---
+    // Una misma medida puede tener los dos tipos (ej. 265/65R17 lisa y con tacos) y no son
+    // intercambiables. Se detecta por la descripción. Si dice HT/HP (Highway) es lisa aunque
+    // el nombre suene offroad (ej. "Wrangler Fortitude HT").
+    const RX_TACO = /(\bA\/?T\b|\bM\/?T\b|\bR\/?T\b|ALL\s*TERRAIN|\bMUD\b|\bATR\b|\bAT\d{1,2}\b|\bMT\d{1,2}\b|GEOLANDAR|WRANGLER|OPEN\s*COUNTRY\s*A|ROAD\s*VENTURE|\bTR292\b)/i;
+    const RX_HIGHWAY = /(\bH\/?T\b|\bH\/?P\b)/i;
+    function dibujoDeDesc(desc) {
+        const d = String(desc || '');
+        if (!d) return '';
+        return (RX_TACO.test(d) && !RX_HIGHWAY.test(d)) ? 'Taco' : 'Lisa';
+    }
+
     // Etiqueta corta del origen de la oferta a partir del nombre de archivo ("...GRUPOA..." -> "Grupo A").
     function etiquetaFuente(fuente) {
         const f = String(fuente || '').toUpperCase();
@@ -2147,6 +2159,7 @@ btnDownloadRestock.addEventListener('click', () => {
 
             pedidosResults.push({
                 sku: winner.sku, skusAlt, desc: winner.desc, marca: winner.marca, medida: winner.medida, modelo: winner.modelo,
+                dibujo: dibujoDeDesc(winner.desc),
                 totalSold, sucursales, full, totalStock, hasStock, hasSales,
                 needed, recommended, costo, costoStock: costoStockFallback, precioLista, precioOportunidad, investment,
                 enOferta, ofertaFuente: winner.ofertaFuente, fuentePrecio
@@ -2200,6 +2213,9 @@ btnDownloadRestock.addEventListener('click', () => {
                 <td style="text-align:center;">${item.medida || '—'}</td>
                 <td>${item.marca || '—'}</td>
                 <td>${item.modelo || '—'}</td>
+                <td style="text-align:center;">${item.dibujo === 'Taco'
+                    ? '<span style="display:inline-block; padding:2px 8px; border-radius:10px; background:rgba(245,158,11,0.15); color:#f59e0b; font-weight:600; font-size:0.78rem;">Taco</span>'
+                    : (item.dibujo === 'Lisa' ? '<span style="color:var(--text-secondary); font-size:0.8rem;">Lisa</span>' : '—')}</td>
                 <td style="font-size:0.82rem; color:var(--text-secondary);">${item.desc}</td>
                 <td style="text-align:center;">${item.hasSales ? item.totalSold : '—'}</td>
                 <td style="text-align:center;">${item.hasStock ? item.sucursales : '—'}</td>
@@ -2232,6 +2248,7 @@ btnDownloadRestock.addEventListener('click', () => {
             'Medida': item.medida || '',
             'Marca': item.marca || '',
             'Modelo': item.modelo || '',
+            'Dibujo': item.dibujo || '',
             'Descripción': item.desc,
             'Ventas': item.hasSales ? item.totalSold : '',
             'Total Sucursales': item.hasStock ? item.sucursales : '',
@@ -2249,7 +2266,7 @@ btnDownloadRestock.addEventListener('click', () => {
         const XLib = (typeof XLSXStyle !== 'undefined' && XLSXStyle) ? XLSXStyle : XLSX;
         const ws = XLib.utils.json_to_sheet(data);
         ws['!cols'] = [
-            {wch:12},{wch:16},{wch:14},{wch:14},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:22},{wch:16},{wch:16},{wch:32},{wch:16}
+            {wch:12},{wch:16},{wch:14},{wch:14},{wch:8},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:22},{wch:16},{wch:16},{wch:32},{wch:16}
         ];
 
         // Bandas de color por grupo de medida: todas las filas de la misma medida comparten color,

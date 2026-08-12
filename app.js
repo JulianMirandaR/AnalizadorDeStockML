@@ -1693,6 +1693,13 @@ btnDownloadRestock.addEventListener('click', () => {
         return (RX_TACO.test(d) && !RX_HIGHWAY.test(d)) ? 'Taco' : 'Lisa';
     }
 
+    // El pedido es para el proveedor Guerrini, que solo vende estas marcas: no se recomienda
+    // comprar ninguna otra (Pirelli, Continental, Nexen, etc.), aunque falte stock.
+    const RX_GUERRINI = /\b(KUMHO|KHUMO|FIREMAX|TRIANGLE|KPATOS|DOUBLE\s*STAR|MARSHALL?)\b/i;
+    function esMarcaGuerrini(marca, desc) {
+        return RX_GUERRINI.test(String(marca || '')) || RX_GUERRINI.test(String(desc || ''));
+    }
+
     // Etiqueta corta del origen de la oferta a partir del nombre de archivo ("...GRUPOA..." -> "Grupo A").
     function etiquetaFuente(fuente) {
         const f = String(fuente || '').toUpperCase();
@@ -2175,7 +2182,9 @@ btnDownloadRestock.addEventListener('click', () => {
 
             const monthly     = totalSold / monthsSales;
             const needed      = hasStock ? Math.max(0, Math.ceil(monthly * M - totalStock)) : 0;
-            const recommended = hasStock ? redondearPedido(needed) : 0;
+            // Solo se recomienda comprar marcas que vende Guerrini (el proveedor de este pedido).
+            const esGuerrini  = esMarcaGuerrini(winner.marca, winner.desc);
+            const recommended = (hasStock && esGuerrini) ? redondearPedido(needed) : 0;
             const investment  = recommended * costo;
 
             pedidosResults.push({

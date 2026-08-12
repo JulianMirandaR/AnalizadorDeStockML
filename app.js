@@ -1904,6 +1904,14 @@ btnDownloadRestock.addEventListener('click', () => {
         reader.readAsArrayBuffer(file);
     }
 
+    // La marca sale del nombre de la hoja, que a veces trae un sufijo del proveedor ("DOUBLESTAR_PCR").
+    // Se saca ese sufijo (si está; algunos meses puede no venir) y se deja en formato lindo: "Doublestar".
+    function limpiarMarcaHoja(sheetName) {
+        let s = String(sheetName || '').trim();
+        s = s.replace(/[_\s-]*pcr\s*$/i, '').trim();                          // quita "_PCR" del final si existe
+        return s.replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());  // Title Case
+    }
+
     // --- PARSE LISTA DE PRECIOS (uno o varios excels, 1 hoja por marca) ---
     // Columnas por hoja: Codigo, Sección, Perfil, Tipo, Llanta, Diseño, Telas, PRECIO.
     // La marca sale del nombre de la hoja. Se ignoran las hojas sin ese encabezado (portada, hojas de costos internas, etc.)
@@ -1939,7 +1947,7 @@ btnDownloadRestock.addEventListener('click', () => {
                         }
                         if (hIdx === -1) return;   // hoja sin lista de precios (portada, hoja de costos, etc.)
 
-                        const marca = String(sheetName || '').trim();
+                        const marca = limpiarMarcaHoja(sheetName);
                         let nuevas = 0;
                         for (let i = hIdx + 1; i < rows.length; i++) {
                             const row = rows[i];

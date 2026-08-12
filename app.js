@@ -2275,9 +2275,10 @@ btnDownloadRestock.addEventListener('click', () => {
             'Total Sucursales': item.hasStock ? item.sucursales : '',
             'Stock ML Full': item.hasStock ? item.full : '',
             'Cantidad a Comprar': item.recommended || '',
-            'Precio Lista (con descuento)': item.precioLista || '',
+            // Precio efectivo para sumar directo: si está en oferta muestra el precio de oportunidad,
+            // si no, el de lista. Así una sola columna sirve para el total.
+            'Precio Lista (con descuento)': (item.enOferta ? item.precioOportunidad : item.precioLista) || '',
             'En Oferta': item.enOferta ? `Sí (${item.ofertaFuente})` : '',
-            'Precio Oferta (con descuento)': item.enOferta ? item.precioOportunidad : '',
             'Costo Usado (ARS)': item.costo || '',
             'Precio Usado': item.fuentePrecio || '',
             'Otros Códigos (misma medida/marca/modelo)': (item.skusAlt && item.skusAlt.length) ? item.skusAlt.join(', ') : '',
@@ -2287,7 +2288,7 @@ btnDownloadRestock.addEventListener('click', () => {
         const XLib = (typeof XLSXStyle !== 'undefined' && XLSXStyle) ? XLSXStyle : XLSX;
         const ws = XLib.utils.json_to_sheet(data);
         ws['!cols'] = [
-            {wch:12},{wch:16},{wch:14},{wch:14},{wch:8},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:22},{wch:16},{wch:16},{wch:32},{wch:16}
+            {wch:12},{wch:16},{wch:14},{wch:14},{wch:8},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:16},{wch:16},{wch:32},{wch:16}
         ];
 
         // Bandas de color por grupo de medida: todas las filas de la misma medida comparten color,

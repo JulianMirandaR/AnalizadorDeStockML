@@ -1554,14 +1554,17 @@ btnDownloadRestock.addEventListener('click', () => {
     const dropPriceList   = document.getElementById('pedidos-drop-pricelist');
     const dropOportun     = document.getElementById('pedidos-drop-oportunidades');
     const dropSales   = document.getElementById('pedidos-drop-sales');
+    const dropSalesMl = document.getElementById('pedidos-drop-sales-ml');
     const dropStock   = document.getElementById('pedidos-drop-stock');
     const filePriceList    = document.getElementById('pedidos-file-pricelist');
     const fileOportun      = document.getElementById('pedidos-file-oportunidades');
     const fileSales   = document.getElementById('pedidos-file-sales');
+    const fileSalesMl = document.getElementById('pedidos-file-sales-ml');
     const fileStock   = document.getElementById('pedidos-file-stock');
     const statusPriceList  = document.getElementById('pedidos-status-pricelist');
     const statusOportun    = document.getElementById('pedidos-status-oportunidades');
     const statusSales = document.getElementById('pedidos-status-sales');
+    const statusSalesMl = document.getElementById('pedidos-status-sales-ml');
     const statusStock = document.getElementById('pedidos-status-stock');
     const mesesInput  = document.getElementById('pedidos-meses');
     const resultsPanel= document.getElementById('pedidos-results-panel');
@@ -1571,6 +1574,7 @@ btnDownloadRestock.addEventListener('click', () => {
     const descOportInputs  = ['pedidos-desc-o1','pedidos-desc-o2'].map(id => document.getElementById(id));
 
     let salesMap = null;   // Map: sku -> { sku, descripcion, unidades }
+    let salesMLMap = null; // Map: sku -> { sku, descripcion, unidades }  (export ML, opcional, complementa al reporte de ventas)
     let stockMap = null;   // Map: sku -> { sku, descripcion, cgil, sMarzo, sMarzo1435, full, costo }
     let priceListMap = new Map();   // sku -> { sku, marca, medida, modelo, precioBase, fuente }
     let offersBySku   = new Map();  // sku -> { precioBase, medida, modelo, fuente }  (Oportunidades)
@@ -1739,6 +1743,7 @@ btnDownloadRestock.addEventListener('click', () => {
     }
 
     setupPedidosZone(dropSales, fileSales, handleSalesFile);
+    setupPedidosZone(dropSalesMl, fileSalesMl, handleSalesMLFile);
     setupPedidosZone(dropStock, fileStock, handleStockFile);
     setupMultiZone(dropPriceList, filePriceList, handlePriceListFiles);
     setupMultiZone(dropOportun, fileOportun, handleOportunidadesFiles);
@@ -1841,6 +1846,73 @@ btnDownloadRestock.addEventListener('click', () => {
                 console.error(err);
                 Swal.fire('Error', 'No se pudo leer el reporte de ventas: ' + err.message, 'error');
                 statusSales.textContent = 'Error al leer';
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    // --- PARSE VENTAS MERCADO LIBRE (opcional, complementa al reporte de ventas) ---
+    // El layout de columnas de este export cambia entre descargas de ML (agrega/mueve columnas);
+    // se detectan por nombre, no por posición fija. Se descartan filas con Estado de cancelación o
+    // devolución para no inflar la demanda real con ventas que no se concretaron.
+    const RX_ESTADO_DESCARTAR = /cancela|devoluci/i;
+    function handleSalesMLFile(file) {
+        statusSalesMl.textContent = 'Procesando...';
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+                let headerIdx = 5, skuIdx = 22, descIdx = 24, unitsIdx = 6, estadoIdx = 2;
+                for (let i = 0; i < Math.min(rows.length, 15); i++) {
+                    const row = rows[i];
+                    if (!row || !Array.isArray(row)) continue;
+                    const cols = Array.from(row).map(norm);
+                    const tSku   = cols.findIndex(c => c === 'sku');
+                    const tUnits = cols.findIndex(c => c === 'unidades');
+                    if (tSku !== -1 && tUnits !== -1) {
+                        headerIdx = i; skuIdx = tSku; unitsIdx = tUnits;
+                        const tEstado = cols.findIndex(c => c === 'estado');
+                        if (tEstado !== -1) estadoIdx = tEstado;
+                        const tDesc = cols.findIndex(c => c.includes('titulo de la publicacion'));
+                        if (tDesc !== -1) descIdx = tDesc;
+                        break;
+                    }
+                }
+
+                salesMLMap = new Map();
+                let totalUnits = 0, descartadas = 0;
+                for (let i = headerIdx + 1; i < rows.length; i++) {
+                    const row = rows[i];
+                    if (!row || row.length === 0) continue;
+                    const estado = String(row[estadoIdx] !== undefined ? row[estadoIdx] : '');
+                    if (RX_ESTADO_DESCARTAR.test(estado)) { descartadas++; continue; }
+                    const rawSku = cleanSkuP(row[skuIdx]);
+                    if (!rawSku) continue;
+                    const soldUnits = parseFloat(row[unitsIdx]) || 0;
+                    if (soldUnits <= 0) continue;
+                    const desc  = String(row[descIdx] !== undefined ? row[descIdx] : '').trim();
+                    // Este export no tiene columna de categoría (a diferencia del reporte de ventas):
+                    // se filtra por título para no mezclar baterías, filtros, etc. de la misma cuenta de ML.
+                    if (!esNeumatico(desc)) continue;
+                    const { sku, mult } = resolverKit(rawSku);
+                    const units = soldUnits * mult;
+                    totalUnits += units;
+                    const ex = salesMLMap.get(sku);
+                    if (ex) { ex.unidades += units; if (!ex.descripcion && desc) ex.descripcion = desc; }
+                    else salesMLMap.set(sku, { sku, descripcion: desc, unidades: units });
+                }
+
+                dropSalesMl.classList.add('drag-over');
+                statusSalesMl.textContent = `✓ ${file.name} — ${salesMLMap.size} SKUs, ${fmt(totalUnits)} uds.` + (descartadas ? ` (${descartadas} canceladas/devueltas descartadas)` : '');
+                statusSalesMl.classList.add('uploaded');
+                tryRenderPedidos();
+            } catch(err) {
+                console.error(err);
+                Swal.fire('Error', 'No se pudo leer el Excel de ventas de Mercado Libre: ' + err.message, 'error');
+                statusSalesMl.textContent = 'Error al leer';
             }
         };
         reader.readAsArrayBuffer(file);
@@ -2084,8 +2156,20 @@ btnDownloadRestock.addEventListener('click', () => {
     // Universo de filas = todos los SKUs de la lista de precios, más los SKUs de ventas/stock
     // que sean neumáticos aunque no estén en ninguna lista de precios cargada.
     function tryRenderPedidos() {
-        if (priceListMap.size === 0 && !salesMap && !stockMap) return;
+        if (priceListMap.size === 0 && !salesMap && !salesMLMap && !stockMap) return;
         calcAndRender();
+    }
+
+    // Ventas final por SKU = la mayor cantidad entre el reporte de ventas y el export de ML,
+    // por si alguno de los dos no capturó todas las ventas de ese código.
+    function ventasCombinadas(sku) {
+        const a = salesMap   ? salesMap.get(sku)   : null;
+        const b = salesMLMap ? salesMLMap.get(sku) : null;
+        if (!a && !b) return null;
+        const unidadesA = a ? a.unidades : 0;
+        const unidadesB = b ? b.unidades : 0;
+        const ganador = unidadesB > unidadesA ? b : a;
+        return { unidades: Math.max(unidadesA, unidadesB), descripcion: (ganador && ganador.descripcion) || (a && a.descripcion) || (b && b.descripcion) || '' };
     }
 
     function calcAndRender() {
@@ -2096,6 +2180,7 @@ btnDownloadRestock.addEventListener('click', () => {
 
         const allSkus = new Set(priceListMap.keys());
         if (salesMap) salesMap.forEach((_, sku) => allSkus.add(sku));
+        if (salesMLMap) salesMLMap.forEach((_, sku) => allSkus.add(sku));
         if (stockMap) stockMap.forEach((v, sku) => { if (esNeumatico(v.descripcion)) allSkus.add(sku); });
 
         // Guerrini a veces lista la misma cubierta (misma medida+marca+modelo) bajo dos códigos de
@@ -2107,7 +2192,8 @@ btnDownloadRestock.addEventListener('click', () => {
             const priceRec = priceListMap.get(sku) || null;
             const oport    = offersBySku.get(sku)  || null;
             const stock    = stockMap ? stockMap.get(sku) : null;
-            const sale     = salesMap ? salesMap.get(sku) : null;
+            // Ventas = la mayor cantidad entre el reporte de ventas y el export de ML para ese SKU.
+            const sale     = ventasCombinadas(sku);
 
             let desc = (stock && stock.descripcion) || (sale && sale.descripcion) || '';
             let medida = priceRec && priceRec.medida;

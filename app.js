@@ -995,20 +995,70 @@ function parseMlFullStock(rows) {
     if (headerRowIdx === -1) {
         throw new Error("No se encontró la fila con el campo 'SKU' en el archivo de Full.");
     }
-    
-    const headers = rows[headerRowIdx].map(h => String(h).trim().toUpperCase());
-    
-    const idxSku = headers.indexOf('SKU');
-    const idxTitle = headers.findIndex(h => h.includes('PRODUCTO') || h.includes('TÍTULO') || h.includes('TITLE'));
-    const idxPending = headers.findIndex(h => h.includes('CAMINO') || h.includes('PENDIENTES'));
-    const idxFull = headers.findIndex(h => h.includes('EN FULL') || h.includes('APTAS'));
-    const idxSales = headers.findIndex(h => h.includes('VENTAS ÚLTIMOS 30 DÍAS (U.)') || h.includes('VENTAS ÚLTIMOS 30 DÍAS') || h.includes('VENTAS (U.)'));
-    
+
+    const firstHeaderRow = rows[headerRowIdx].map(h => String(h).trim().toUpperCase());
+    const idxSku = firstHeaderRow.indexOf('SKU');
+
+    // El nuevo formato de Mercado Libre (hoja "Resumen") reparte el encabezado
+    // real en varias filas: la fila principal + subtítulos por grupo de columnas
+    // (ej. "Unidades en Full" / "Aptas para vender"). Mientras la columna de SKU
+    // venga vacía seguimos acumulando esas filas al encabezado combinado.
+    const headerRows = [rows[headerRowIdx]];
+    let dataStartIdx = headerRowIdx + 1;
+    while (dataStartIdx < rows.length && headerRows.length < 5) {
+        const row = rows[dataStartIdx];
+        const skuCell = row ? row[idxSku] : undefined;
+        const isBlankSku = skuCell === undefined || skuCell === null || String(skuCell).trim() === '';
+        if (!isBlankSku) break;
+        headerRows.push(row);
+        dataStartIdx++;
+    }
+
+    const numCols = Math.max(...headerRows.map(r => r.length));
+    const headers = [];
+    for (let c = 0; c < numCols; c++) {
+        headers.push(headerRows.map(r => (r[c] !== undefined && r[c] !== null) ? String(r[c]).trim() : '').join(' ').trim().toUpperCase());
+    }
+
+    // Busca por etapas: primero frases específicas (evita falsos positivos como
+    // "Publicaciones con este PRODUCTO" o "...más vendidos EN FULL...") y sólo
+    // si no aparecen recurre a coincidencias más genéricas.
+    const findHeaderIdx = (stages) => {
+        for (const stage of stages) {
+            const idx = headers.findIndex(h => stage.exact ? h === stage.value : h.includes(stage.value));
+            if (idx !== -1) return idx;
+        }
+        return -1;
+    };
+
+    const idxTitle = findHeaderIdx([
+        { value: 'PRODUCTO', exact: true },
+        { value: 'TÍTULO' },
+        { value: 'TITLE' },
+        { value: 'PRODUCTO' }
+    ]);
+    const idxPending = findHeaderIdx([
+        { value: 'PENDIENTES DE INGRESO' },
+        { value: 'PENDIENTES' },
+        { value: 'CAMINO' }
+    ]);
+    const idxFull = findHeaderIdx([
+        { value: 'APTAS PARA VENDER' },
+        { value: 'APTAS' },
+        { value: 'EN FULL' }
+    ]);
+    const idxSales = findHeaderIdx([
+        { value: 'VENDIDAS' },
+        { value: 'VENTAS ÚLTIMOS 30 DÍAS (U.)' },
+        { value: 'VENTAS ÚLTIMOS 30 DÍAS' },
+        { value: 'VENTAS (U.)' }
+    ]);
+
     if (idxSku === -1 || idxFull === -1) {
         throw new Error("El archivo de Full no tiene las columnas requeridas (SKU y Unidades en Full).");
     }
-    
-    for (let i = headerRowIdx + 1; i < rows.length; i++) {
+
+    for (let i = dataStartIdx; i < rows.length; i++) {
         const row = rows[i];
         if (!row || row.length === 0) continue;
         

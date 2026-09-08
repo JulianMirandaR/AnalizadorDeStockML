@@ -2459,3 +2459,446 @@ btnDownloadRestock.addEventListener('click', () => {
     });
 })();
 
+// =============================================
+// --- MÓDULO ANÁLISIS DE PRECIOS ML ---
+// =============================================
+
+(function() {
+    const IVA = 1.21;
+
+    // Elementos
+    const dropPub    = document.getElementById('drop-zone-precios-pub');
+    const dropVentas = document.getElementById('drop-zone-precios-ventas');
+    const dropStock  = document.getElementById('drop-zone-precios-stock');
+    const filePub    = document.getElementById('file-precios-pub');
+    const fileVentas = document.getElementById('file-precios-ventas');
+    const fileStock  = document.getElementById('file-precios-stock');
+    const statusPub    = document.getElementById('status-precios-pub');
+    const statusVentas = document.getElementById('status-precios-ventas');
+    const statusStock  = document.getElementById('status-precios-stock');
+    const btnProcess  = document.getElementById('btn-process-precios');
+    const btnDownload = document.getElementById('btn-download-precios');
+    const resultsPanel = document.getElementById('results-panel-precios');
+    const tbody = document.getElementById('results-body-precios');
+    const inputMargenMin = document.getElementById('precios-margen-min');
+    const chkSoloNeumaticos = document.getElementById('precios-solo-neumaticos');
+    const inputBuscar = document.getElementById('precios-buscar');
+    const chkSoloProblemas = document.getElementById('precios-solo-problemas');
+    const selectOrden = document.getElementById('precios-orden');
+
+    let dataPub = null;      // array de publicaciones parseadas
+    let dataVentas = null;   // map MLA -> unidades vendidas último mes
+    let dataStock = null;    // map SKU -> costo s/IVA
+    let finalResults = [];   // resultado combinado
+
+    // --- Helpers de formato ---
+    const fmtMoney = (n) => (n === null || n === undefined || isNaN(n)) ? '—'
+        : '$' + Math.round(n).toLocaleString('es-AR');
+    const fmtPct = (n) => (n === null || n === undefined || isNaN(n)) ? '—'
+        : (n * 100).toFixed(1).replace('.', ',') + '%';
+    // Acorta el texto de cuotas de ML para la tabla (mantiene el original en el Excel)
+    const fmtCuotas = (c) => {
+        if (!c) return '—';
+        const low = c.toLowerCase();
+        if (low.includes('banco')) return '<span style="opacity:0.6;">Solo bancos</span>';
+        const m = c.match(/(\d+)\s*sin inter/i);
+        if (m) return `<span style="color:var(--success, #22c55e); font-weight:600;">${m[1]} s/interés</span>`;
+        const h = c.match(/hasta\s*(\d+)/i);
+        if (h) return `Hasta ${h[1]}`;
+        return c;
+    };
+    const toNum = (v) => {
+        if (v === null || v === undefined || v === '') return null;
+        if (typeof v === 'number') return v;
+        const s = String(v).replace(/[^0-9,.-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.');
+        const n = parseFloat(s);
+        return isNaN(n) ? null : n;
+    };
+
+    // --- Detección de columnas por nombre ---
+    function findHeaderRow(rows, mustHave) {
+        for (let i = 0; i < Math.min(rows.length, 20); i++) {
+            const up = (rows[i] || []).map(c => String(c).trim().toUpperCase());
+            if (mustHave.every(m => up.some(h => h.includes(m)))) return i;
+        }
+        return -1;
+    }
+    function colFinder(headerRow) {
+        const up = headerRow.map(c => String(c).trim().toUpperCase());
+        return (...needles) => {
+            for (const nd of needles) {
+                const idx = up.findIndex(h => h.includes(nd));
+                if (idx !== -1) return idx;
+            }
+            return -1;
+        };
+    }
+
+    // --- Parser: export de Publicaciones enriquecido ---
+    function parsePublicaciones(rows) {
+        const hIdx = findHeaderRow(rows, ['SKU', 'MLA']);
+        if (hIdx === -1) throw new Error("El export de Publicaciones no tiene columnas 'SKU' y 'MLA'.");
+        const find = colFinder(rows[hIdx]);
+        const cSku    = find('SKU');
+        const cMla    = find('MLA');
+        const cOpcion = find('OPCIÓN DE VENTA', 'OPCION DE VENTA', 'OPCIÓN', 'OPCION');
+        const cDesc   = find('DESCRIPCIÓN', 'DESCRIPCION', 'TÍTULO', 'TITULO');
+        const cPrecio = find('PRECIO (COMPRADOR)', 'PRECIO COMPRADOR', 'PRECIO');
+        const cRecib  = find('RECIBIMOS');
+        const cCosto  = find('COSTO C/IVA', 'COSTO');
+        const cVentas = find('CANT. VENTAS', 'CANT VENTAS', 'VENTAS');
+        const cCuotas = find('CUOTAS');
+        const cStock  = find('STOCK');
+        // OJO: el encabezado de stock es "Stock depósito (Físico (todos menos Full))"
+        // y contiene la palabra "Full", así que la columna Full se busca por match EXACTO.
+        const headerUp = rows[hIdx].map(c => String(c).trim().toUpperCase());
+        let cFull = headerUp.indexOf('FULL');
+        if (cFull === -1) cFull = headerUp.findIndex(h => h === 'FULL' || h === 'EN FULL');
+        if (cMla === -1 || cPrecio === -1 || cRecib === -1) {
+            throw new Error("Faltan columnas clave (MLA, Precio comprador o Recibimos) en el export de Publicaciones.");
+        }
+        const out = [];
+        for (let i = hIdx + 1; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row || row.length === 0) continue;
+            const mla = row[cMla] ? String(row[cMla]).trim() : '';
+            if (!mla) continue;
+            const sku = (cSku !== -1 && row[cSku] !== undefined && row[cSku] !== null) ? String(row[cSku]).trim() : '';
+            out.push({
+                sku,
+                mla,
+                opcion: cOpcion !== -1 ? String(row[cOpcion] || '').trim() : '',
+                cuotas: cCuotas !== -1 ? String(row[cCuotas] || '').trim() : '',
+                desc: cDesc !== -1 ? String(row[cDesc] || '').trim() : '',
+                precio: toNum(row[cPrecio]),
+                recibimos: toNum(row[cRecib]),
+                costo: cCosto !== -1 ? toNum(row[cCosto]) : null,
+                ventas: cVentas !== -1 ? (toNum(row[cVentas]) || 0) : 0,
+                stock: cStock !== -1 ? (toNum(row[cStock]) || 0) : 0,
+                full: cFull !== -1 ? String(row[cFull] || '').trim() : ''
+            });
+        }
+        return out;
+    }
+
+    // --- Parser: Ventas AR -> unidades del último mes por MLA ---
+    function parseVentasAR(rows) {
+        const hIdx = findHeaderRow(rows, ['SKU', 'PUBLICACIÓN']);
+        const hIdx2 = hIdx !== -1 ? hIdx : findHeaderRow(rows, ['SKU', 'PUBLICACION']);
+        if (hIdx2 === -1) throw new Error("El reporte de Ventas no tiene columna '# de publicación'.");
+        const find = colFinder(rows[hIdx2]);
+        const cMla = find('# DE PUBLICACIÓN', '# DE PUBLICACION', 'PUBLICACIÓN', 'PUBLICACION');
+        const cUni = find('UNIDADES');
+        const cEstado = find('ESTADO');
+        const map = {};
+        for (let i = hIdx2 + 1; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row) continue;
+            const mla = cMla !== -1 && row[cMla] ? String(row[cMla]).trim() : '';
+            if (!mla || !mla.toUpperCase().startsWith('MLA')) continue;
+            const estado = cEstado !== -1 ? String(row[cEstado] || '').toLowerCase() : '';
+            if (estado.includes('cancel') || estado.includes('devol') || estado.includes('reembols')) continue;
+            const u = cUni !== -1 ? (toNum(row[cUni]) || 0) : 0;
+            map[mla] = (map[mla] || 0) + u;
+        }
+        return map;
+    }
+
+    // --- Parser: stock_todo -> costo s/IVA por SKU ---
+    function parseStockTodo(rows) {
+        const hIdx = findHeaderRow(rows, ['SKU', 'COSTO']);
+        if (hIdx === -1) throw new Error("El stock del sistema no tiene columna 'SKU' y 'Costo'.");
+        const find = colFinder(rows[hIdx]);
+        const cSku = find('SKU');
+        const cCosto = find('COSTO S/IVA', 'COSTO');
+        const map = {};
+        for (let i = hIdx + 1; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row) continue;
+            const sku = cSku !== -1 && row[cSku] ? String(row[cSku]).trim() : '';
+            if (!sku) continue;
+            const costo = cCosto !== -1 ? toNum(row[cCosto]) : null;
+            if (costo !== null) map[sku] = costo;
+        }
+        return map;
+    }
+
+    // --- Setup drop zones ---
+    function setupDropZone(dropZone, fileInput, statusElement, type) {
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                handleFile(fileInput, statusElement, type);
+            }
+        });
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length === 0) return;
+            handleFile(fileInput, statusElement, type);
+        });
+    }
+
+    function handleFile(input, statusElement, type) {
+        const file = input.files[0];
+        if (!file) return;
+        statusElement.textContent = file.name;
+        statusElement.classList.add('uploaded');
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const ws = workbook.Sheets[workbook.SheetNames.includes('Publicaciones') && type === 'pub'
+                    ? 'Publicaciones' : workbook.SheetNames[0]];
+                const json = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+                if (type === 'pub')         dataPub = parsePublicaciones(json);
+                else if (type === 'ventas') dataVentas = parseVentasAR(json);
+                else if (type === 'stock')  dataStock = parseStockTodo(json);
+                checkReady();
+            } catch (err) {
+                Swal.fire('Error', 'No se pudo leer el archivo: ' + err.message, 'error');
+                console.error(err);
+                statusElement.textContent = 'Error al leer';
+                statusElement.classList.remove('uploaded');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    function checkReady() {
+        btnProcess.disabled = !dataPub;
+    }
+
+    setupDropZone(dropPub, filePub, statusPub, 'pub');
+    setupDropZone(dropVentas, fileVentas, statusVentas, 'ventas');
+    setupDropZone(dropStock, fileStock, statusStock, 'stock');
+
+    // --- Cálculo ---
+    function calcular() {
+        finalResults = dataPub.map(p => {
+            let costo = p.costo;
+            // Completar costo desde stock_todo (s/IVA -> c/IVA) si falta
+            if ((!costo || costo === 0) && dataStock && dataStock[p.sku] != null) {
+                costo = dataStock[p.sku] * IVA;
+            }
+            const recibimos = p.recibimos;
+            const margen = (recibimos != null && costo != null && costo > 0) ? recibimos - costo : null;
+            const margenPct = (margen != null && costo > 0) ? margen / costo : null;
+            const ventasMes = dataVentas ? (dataVentas[p.mla] ?? null) : null;
+            return { ...p, costo, margen, margenPct, ventasMes };
+        });
+    }
+
+    // --- Clasificación de problemas ---
+    function getFlag(item) {
+        const min = (parseFloat(inputMargenMin.value) || 0) / 100;
+        if (item.margen == null) return 'sindato';
+        if (item.margen < 0) return 'perdida';
+        if (item.margenPct != null && item.margenPct < min) return 'bajo';
+        return 'ok';
+    }
+
+    // --- Agrupa por SKU y ordena grupos + filas según el criterio elegido ---
+    // Devuelve un array plano de { r, firstOfGroup, groupIndex } manteniendo
+    // todos los MLA de un mismo SKU juntos (el SKU se muestra una sola vez).
+    function groupAndOrder(rows, orden) {
+        const nz = (v) => (v == null ? Infinity : v);
+        const nzDesc = (v) => (v == null ? -Infinity : v);
+
+        // Orden dentro de cada grupo (mismo SKU)
+        const withinCmp = (a, b) => {
+            switch (orden) {
+                case 'ventas-desc': return nzDesc(b.ventas) - nzDesc(a.ventas);
+                case 'precio-desc': return nzDesc(b.precio) - nzDesc(a.precio);
+                case 'margen-asc':  return nz(a.margen) - nz(b.margen);
+                default:            return nz(a.margenPct) - nz(b.margenPct);
+            }
+        };
+
+        const groups = new Map();
+        rows.forEach(r => {
+            const key = (r.sku && r.sku !== '0') ? r.sku : '__' + r.mla;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(r);
+        });
+
+        const arr = [...groups.entries()].map(([key, rs]) => {
+            rs.sort(withinCmp);
+            let rep;
+            switch (orden) {
+                case 'ventas-desc': rep = rs.reduce((s, r) => s + (r.ventas || 0), 0); break;
+                case 'stock-desc':  rep = Math.max(...rs.map(r => nzDesc(r.stock))); break;
+                case 'precio-desc': rep = Math.max(...rs.map(r => nzDesc(r.precio))); break;
+                case 'margen-asc':  rep = Math.min(...rs.map(r => nz(r.margen))); break;
+                case 'sku':         rep = key; break;
+                default:            rep = Math.min(...rs.map(r => nz(r.margenPct)));
+            }
+            return { key, rs, rep };
+        });
+
+        arr.sort((a, b) => {
+            if (orden === 'sku') return String(a.rep).localeCompare(String(b.rep));
+            if (orden === 'ventas-desc' || orden === 'stock-desc' || orden === 'precio-desc') return b.rep - a.rep;
+            return a.rep - b.rep; // margen / margenPct ascendente (peor primero)
+        });
+
+        const out = [];
+        arr.forEach((g, gi) => {
+            g.rs.forEach((r, ri) => out.push({ r, firstOfGroup: ri === 0, groupIndex: gi }));
+        });
+        return out;
+    }
+
+    // --- Render ---
+    function render() {
+        const soloNeumaticos = chkSoloNeumaticos.checked;
+        const soloProblemas = chkSoloProblemas.checked;
+        const q = inputBuscar.value.trim().toLowerCase();
+
+        let rows = finalResults.slice();
+
+        if (soloNeumaticos) {
+            rows = rows.filter(r => r.sku && r.sku !== '0' && r.costo != null && r.costo > 0);
+        }
+        if (q) {
+            rows = rows.filter(r =>
+                r.sku.toLowerCase().includes(q) ||
+                r.mla.toLowerCase().includes(q) ||
+                r.desc.toLowerCase().includes(q));
+        }
+        if (soloProblemas) {
+            rows = rows.filter(r => { const f = getFlag(r); return f === 'perdida' || f === 'bajo'; });
+        }
+
+        const orden = selectOrden.value;
+        const grouped = groupAndOrder(rows, orden);
+
+        const flagColor = { perdida: 'var(--danger, #ef4444)', bajo: 'var(--warning, #f59e0b)', ok: 'var(--success, #22c55e)', sindato: 'var(--text-secondary)' };
+        tbody.innerHTML = grouped.map(({ r, firstOfGroup, groupIndex }) => {
+            const f = getFlag(r);
+            const problemBg = f === 'perdida' ? 'rgba(239,68,68,0.12)'
+                : f === 'bajo' ? 'rgba(245,158,11,0.12)' : '';
+            // Franja alterna por grupo de SKU (solo si la fila no tiene color de problema)
+            const groupBg = problemBg || (groupIndex % 2 === 1 ? 'rgba(255,255,255,0.03)' : '');
+            const rowStyle = `${groupBg ? `background:${groupBg};` : ''}${firstOfGroup && groupIndex > 0 ? 'border-top:3px solid var(--accent);' : ''}`;
+            const margenColor = flagColor[f];
+            return `<tr style="${rowStyle}">
+                <td style="font-weight:700;">${firstOfGroup ? (r.sku || '—') : ''}</td>
+                <td style="font-size:0.8rem;">${r.mla}</td>
+                <td>${r.opcion || '—'}</td>
+                <td style="font-size:0.8rem;">${fmtCuotas(r.cuotas)}</td>
+                <td style="font-size:0.85rem;">${r.desc || '—'}</td>
+                <td style="text-align:right;">${fmtMoney(r.precio)}</td>
+                <td style="text-align:right;">${fmtMoney(r.recibimos)}</td>
+                <td style="text-align:right;">${fmtMoney(r.costo)}</td>
+                <td style="text-align:right; color:${margenColor}; font-weight:600;">${fmtMoney(r.margen)}</td>
+                <td style="text-align:center; color:${margenColor}; font-weight:600;">${fmtPct(r.margenPct)}</td>
+                <td style="text-align:center;">${r.ventas ?? '—'}</td>
+                <td style="text-align:center;">${r.ventasMes ?? '—'}</td>
+                <td style="text-align:center;">${firstOfGroup ? (r.stock ?? '—') : ''}</td>
+                <td style="text-align:center;">${r.full || '—'}</td>
+            </tr>`;
+        }).join('');
+
+        // Estadísticas (sobre el universo filtrado por "solo neumáticos", no por búsqueda)
+        let universe = finalResults.slice();
+        if (soloNeumaticos) universe = universe.filter(r => r.sku && r.sku !== '0' && r.costo != null && r.costo > 0);
+        const conMargen = universe.filter(r => r.margen != null);
+        const perdida = conMargen.filter(r => r.margen < 0).length;
+        const bajo = conMargen.filter(r => getFlag(r) === 'bajo').length;
+        const margenProm = conMargen.length
+            ? conMargen.reduce((s, r) => s + r.margenPct, 0) / conMargen.length : null;
+        document.getElementById('stat-precios-total').textContent = universe.length;
+        document.getElementById('stat-precios-perdida').textContent = perdida;
+        document.getElementById('stat-precios-bajo').textContent = bajo;
+        document.getElementById('stat-precios-margen-prom').textContent = margenProm != null ? fmtPct(margenProm) : '—';
+    }
+
+    // --- Eventos ---
+    btnProcess.addEventListener('click', () => {
+        btnProcess.disabled = true;
+        btnProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Analizando...';
+        setTimeout(() => {
+            calcular();
+            render();
+            resultsPanel.classList.remove('hidden');
+            btnProcess.innerHTML = 'Analizar Precios';
+            btnProcess.disabled = false;
+            Swal.fire({
+                title: '¡Análisis completado!',
+                text: `Se analizaron ${finalResults.length} publicaciones.`,
+                icon: 'success',
+                confirmButtonColor: '#3b82f6'
+            });
+        }, 300);
+    });
+
+    [inputBuscar, chkSoloProblemas, selectOrden, inputMargenMin, chkSoloNeumaticos].forEach(el => {
+        const ev = (el.type === 'text' || el.type === 'number') ? 'input' : 'change';
+        el.addEventListener(ev, () => { if (finalResults.length) render(); });
+    });
+
+    // --- Exportar a Excel ---
+    btnDownload.addEventListener('click', () => {
+        const soloNeumaticos = chkSoloNeumaticos.checked;
+        let rows = finalResults.slice();
+        if (soloNeumaticos) rows = rows.filter(r => r.sku && r.sku !== '0' && r.costo != null && r.costo > 0);
+        if (rows.length === 0) {
+            Swal.fire({ title: 'Sin datos', text: 'No hay publicaciones para exportar.', icon: 'warning', confirmButtonColor: '#3b82f6' });
+            return;
+        }
+        // Agrupa por SKU igual que la vista (SKU una sola vez por grupo)
+        const orden = selectOrden.value;
+        const grouped = groupAndOrder(rows, orden);
+
+        const excelData = grouped.map(({ r, firstOfGroup }) => ({
+            'SKU': firstOfGroup ? r.sku : '',
+            'MLA': r.mla,
+            'Opción de venta': r.opcion,
+            'Cuotas s/interés': r.cuotas,
+            'Descripción': r.desc,
+            'Precio comprador': r.precio,
+            'Recibimos (neto)': r.recibimos,
+            'Costo c/IVA': r.costo,
+            'Margen $': r.margen,
+            'Margen %': r.margenPct != null ? +(r.margenPct * 100).toFixed(1) : null,
+            'Cant. ventas': r.ventas,
+            'Ventas último mes': r.ventasMes,
+            'Stock': firstOfGroup ? r.stock : '',
+            'Full': r.full
+        }));
+
+        const XLib = window.XLSXStyle || XLSX;
+        const ws = XLib.utils.json_to_sheet(excelData);
+        ws['!cols'] = [
+            { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 22 }, { wch: 45 },
+            { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 10 },
+            { wch: 12 }, { wch: 16 }, { wch: 8 }, { wch: 6 }
+        ];
+        // Colorea: rojo/amarillo si hay problema; si no, franja alterna por grupo de SKU.
+        if (window.XLSXStyle) {
+            const numCols = Object.keys(excelData[0]).length;
+            const GROUP_BANDS = ['FFFFFF', 'DDEBF7'];
+            grouped.forEach(({ r, groupIndex }, i) => {
+                const f = getFlag(r);
+                let rgb = null;
+                if (f === 'perdida') rgb = 'FFC7CE';
+                else if (f === 'bajo') rgb = 'FFEB9C';
+                else rgb = GROUP_BANDS[groupIndex % 2];
+                for (let c = 0; c < numCols; c++) {
+                    const addr = XLib.utils.encode_cell({ r: i + 1, c });
+                    if (ws[addr]) ws[addr].s = { fill: { fgColor: { rgb } } };
+                }
+            });
+        }
+        const wb = XLib.utils.book_new();
+        XLib.utils.book_append_sheet(wb, ws, 'Análisis de Precios');
+        const dateStr = new Date().toISOString().split('T')[0];
+        XLib.writeFile(wb, `Analisis_Precios_ML_${dateStr}.xlsx`);
+    });
+})();
+

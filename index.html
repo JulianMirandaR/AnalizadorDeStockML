@@ -678,8 +678,8 @@
                         <i class="fa-solid fa-bag-shopping"></i>
                     </div>
                     <h3>Ventas Mercado Libre <span style="font-weight:400; font-size:0.8rem; color:var(--text-secondary);">(opcional)</span></h3>
-                    <p>Export "Ventas AR" de Mercado Libre/Shops (SKU, Estado, Unidades, Título). Por si el Reporte de Ventas no capturó todo: por cada SKU se toma la cantidad más alta entre ambos archivos.</p>
-                    <input type="file" id="pedidos-file-sales-ml" accept=".xlsx, .xls" hidden>
+                    <p>Export "Ventas AR" de Mercado Libre/Shops (SKU, Estado, Unidades, Título). Podés cargar <strong>varias cuentas</strong>: arrastrá los 2 archivos juntos y las ventas se suman entre cuentas. Luego, por cada SKU se toma la cantidad más alta entre esto y el Reporte de Ventas.</p>
+                    <input type="file" id="pedidos-file-sales-ml" accept=".xlsx, .xls" multiple hidden>
                     <div class="file-status" id="pedidos-status-sales-ml">Sin archivo</div>
                 </div>
 
@@ -688,7 +688,7 @@
                         <i class="fa-solid fa-warehouse"></i>
                     </div>
                     <h3>Stock Total por Depósito <span style="font-weight:400; font-size:0.8rem; color:var(--text-secondary);">(opcional)</span></h3>
-                    <p>Excel con SKU (Col B), Coronel Gil (Col F), S. Marzo (Col G), S. Marzo 1435 (Col H), Full (Col I), Costo (Col J)</p>
+                    <p>Excel con SKU (Col B), Coronel Gil (Col F), S. Marzo (Col G), S. Marzo 1435 (Col H), Full (Col I), En camino (Col J), Costo (Col K). Las columnas se detectan por nombre.</p>
                     <input type="file" id="pedidos-file-stock" accept=".xlsx, .xls, .csv" hidden>
                     <div class="file-status" id="pedidos-status-stock">Sin archivo</div>
                 </div>
@@ -699,7 +699,7 @@
                     <label for="pedidos-meses" style="font-weight: 600; color: var(--text-primary);">Meses de stock a cubrir:</label>
                     <input type="number" id="pedidos-meses" value="2" min="0.5" max="12" step="0.5" style="width: 80px; padding: 0.5rem; border-radius: 8px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-primary); font-family: inherit; font-size: 1rem; text-align: center;">
                 </div>
-                <p style="color: var(--text-secondary); font-size: 0.88rem;">El sistema calculará: <strong style="color:var(--accent-cyan);">Pedido = (Ventas mensuales × Meses) − Stock actual</strong></p>
+                <p style="color: var(--text-secondary); font-size: 0.88rem;">El sistema calculará: <strong style="color:var(--accent-cyan);">Pedido = (Ventas mensuales × Meses) − Stock actual − En camino</strong></p>
             </section>
 
             <section class="config-section" style="background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 16px; padding: 1.5rem; backdrop-filter: blur(10px); display: flex; flex-wrap: wrap; gap: 2rem; align-items: center; justify-content: center; margin: 1rem 1.5rem 0;">
@@ -790,6 +790,7 @@
                                 <th style="text-align:center;">Ventas</th>
                                 <th style="text-align:center;" title="Coronel Gil + Santiago Marzo + Santiago Marzo 1435">Total Sucursales</th>
                                 <th style="text-align:center;">Full</th>
+                                <th style="text-align:center;" title="Mercadería en camino (ya por recibirse). Se descuenta del pedido.">En Camino</th>
                                 <th style="text-align:center;">A Comprar</th>
                                 <th style="text-align:center;">Oferta</th>
                                 <th style="text-align:center;">Costo Unit.</th>

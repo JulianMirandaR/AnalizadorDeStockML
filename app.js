@@ -1625,7 +1625,7 @@ btnDownloadRestock.addEventListener('click', () => {
 
     let salesMap = null;   // Map: sku -> { sku, descripcion, unidades }
     let salesMLMap = null; // Map: sku -> { sku, descripcion, unidades }  (export ML, opcional, complementa al reporte de ventas)
-    let stockMap = null;   // Map: sku -> { sku, descripcion, cgil, sMarzo, sMarzo1435, full, costo }
+    let stockMap = null;   // Map: sku -> { sku, descripcion, cgil, sMarzo, sMarzo1435, full, enCamino, costo }
     let priceListMap = new Map();   // sku -> { sku, marca, medida, modelo, precioBase, fuente }
     let offersBySku   = new Map();  // sku -> { precioBase, medida, modelo, fuente }  (Oportunidades)
     let salesPeriodMonths = null;   // meses cubiertos por el reporte de ventas cargado (calculado de las fechas)
@@ -1793,7 +1793,7 @@ btnDownloadRestock.addEventListener('click', () => {
     }
 
     setupPedidosZone(dropSales, fileSales, handleSalesFile);
-    setupPedidosZone(dropSalesMl, fileSalesMl, handleSalesMLFile);
+    setupMultiZone(dropSalesMl, fileSalesMl, handleSalesMLFiles);
     setupPedidosZone(dropStock, fileStock, handleStockFile);
     setupMultiZone(dropPriceList, filePriceList, handlePriceListFiles);
     setupMultiZone(dropOportun, fileOportun, handleOportunidadesFiles);
@@ -1906,66 +1906,86 @@ btnDownloadRestock.addEventListener('click', () => {
     // se detectan por nombre, no por posición fija. Se descartan filas con Estado de cancelación o
     // devolución para no inflar la demanda real con ventas que no se concretaron.
     const RX_ESTADO_DESCARTAR = /cancela|devoluci/i;
-    function handleSalesMLFile(file) {
+    // Acepta varias cuentas de ML a la vez (ej. 2 cuentas). Cada archivo es una cuenta distinta:
+    // las ventas de un mismo SKU se SUMAN entre cuentas para reflejar la demanda total en ML.
+    // Se reinicia con cada tanda: arrastrá los 2 archivos juntos (o seleccionalos en un solo paso).
+    function handleSalesMLFiles(fileList) {
+        const files = Array.from(fileList);
         statusSalesMl.textContent = 'Procesando...';
-        const reader = new FileReader();
-        reader.onload = function(e) {
-            try {
-                const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
-                const ws = wb.Sheets[wb.SheetNames[0]];
-                const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+        salesMLMap = new Map();
+        let done = 0, cuentas = 0, totalUnits = 0, descartadas = 0, errores = 0;
 
-                let headerIdx = 5, skuIdx = 22, descIdx = 24, unitsIdx = 6, estadoIdx = 2;
-                for (let i = 0; i < Math.min(rows.length, 15); i++) {
-                    const row = rows[i];
-                    if (!row || !Array.isArray(row)) continue;
-                    const cols = Array.from(row).map(norm);
-                    const tSku   = cols.findIndex(c => c === 'sku');
-                    const tUnits = cols.findIndex(c => c === 'unidades');
-                    if (tSku !== -1 && tUnits !== -1) {
-                        headerIdx = i; skuIdx = tSku; unitsIdx = tUnits;
-                        const tEstado = cols.findIndex(c => c === 'estado');
-                        if (tEstado !== -1) estadoIdx = tEstado;
-                        const tDesc = cols.findIndex(c => c.includes('titulo de la publicacion'));
-                        if (tDesc !== -1) descIdx = tDesc;
-                        break;
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                    const ws = wb.Sheets[wb.SheetNames[0]];
+                    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+
+                    let headerIdx = 5, skuIdx = 22, descIdx = 24, unitsIdx = 6, estadoIdx = 2;
+                    for (let i = 0; i < Math.min(rows.length, 15); i++) {
+                        const row = rows[i];
+                        if (!row || !Array.isArray(row)) continue;
+                        const cols = Array.from(row).map(norm);
+                        const tSku   = cols.findIndex(c => c === 'sku');
+                        const tUnits = cols.findIndex(c => c === 'unidades');
+                        if (tSku !== -1 && tUnits !== -1) {
+                            headerIdx = i; skuIdx = tSku; unitsIdx = tUnits;
+                            const tEstado = cols.findIndex(c => c === 'estado');
+                            if (tEstado !== -1) estadoIdx = tEstado;
+                            const tDesc = cols.findIndex(c => c.includes('titulo de la publicacion'));
+                            if (tDesc !== -1) descIdx = tDesc;
+                            break;
+                        }
                     }
-                }
 
-                salesMLMap = new Map();
-                let totalUnits = 0, descartadas = 0;
-                for (let i = headerIdx + 1; i < rows.length; i++) {
-                    const row = rows[i];
-                    if (!row || row.length === 0) continue;
-                    const estado = String(row[estadoIdx] !== undefined ? row[estadoIdx] : '');
-                    if (RX_ESTADO_DESCARTAR.test(estado)) { descartadas++; continue; }
-                    const rawSku = cleanSkuP(row[skuIdx]);
-                    if (!rawSku) continue;
-                    const soldUnits = parseFloat(row[unitsIdx]) || 0;
-                    if (soldUnits <= 0) continue;
-                    const desc  = String(row[descIdx] !== undefined ? row[descIdx] : '').trim();
-                    // Este export no tiene columna de categoría (a diferencia del reporte de ventas):
-                    // se filtra por título para no mezclar baterías, filtros, etc. de la misma cuenta de ML.
-                    if (!esNeumatico(desc)) continue;
-                    const { sku, mult } = resolverKit(rawSku);
-                    const units = soldUnits * mult;
-                    totalUnits += units;
-                    const ex = salesMLMap.get(sku);
-                    if (ex) { ex.unidades += units; if (!ex.descripcion && desc) ex.descripcion = desc; }
-                    else salesMLMap.set(sku, { sku, descripcion: desc, unidades: units });
+                    for (let i = headerIdx + 1; i < rows.length; i++) {
+                        const row = rows[i];
+                        if (!row || row.length === 0) continue;
+                        const estado = String(row[estadoIdx] !== undefined ? row[estadoIdx] : '');
+                        if (RX_ESTADO_DESCARTAR.test(estado)) { descartadas++; continue; }
+                        const rawSku = cleanSkuP(row[skuIdx]);
+                        if (!rawSku) continue;
+                        const soldUnits = parseFloat(row[unitsIdx]) || 0;
+                        if (soldUnits <= 0) continue;
+                        const desc  = String(row[descIdx] !== undefined ? row[descIdx] : '').trim();
+                        // Este export no tiene columna de categoría (a diferencia del reporte de ventas):
+                        // se filtra por título para no mezclar baterías, filtros, etc. de la misma cuenta de ML.
+                        if (!esNeumatico(desc)) continue;
+                        const { sku, mult } = resolverKit(rawSku);
+                        const units = soldUnits * mult;
+                        totalUnits += units;
+                        const ex = salesMLMap.get(sku);
+                        if (ex) { ex.unidades += units; if (!ex.descripcion && desc) ex.descripcion = desc; }
+                        else salesMLMap.set(sku, { sku, descripcion: desc, unidades: units });
+                    }
+                    cuentas++;
+                } catch(err) {
+                    console.error('Ventas ML ' + file.name, err);
+                    errores++;
+                } finally {
+                    done++;
+                    if (done === files.length) finalizeSalesML(cuentas, totalUnits, descartadas, errores);
                 }
+            };
+            reader.onerror = function() { done++; errores++; if (done === files.length) finalizeSalesML(cuentas, totalUnits, descartadas, errores); };
+            reader.readAsArrayBuffer(file);
+        });
+    }
 
-                dropSalesMl.classList.add('drag-over');
-                statusSalesMl.textContent = `✓ ${file.name} — ${salesMLMap.size} SKUs, ${fmt(totalUnits)} uds.` + (descartadas ? ` (${descartadas} canceladas/devueltas descartadas)` : '');
-                statusSalesMl.classList.add('uploaded');
-                tryRenderPedidos();
-            } catch(err) {
-                console.error(err);
-                Swal.fire('Error', 'No se pudo leer el Excel de ventas de Mercado Libre: ' + err.message, 'error');
-                statusSalesMl.textContent = 'Error al leer';
-            }
-        };
-        reader.readAsArrayBuffer(file);
+    function finalizeSalesML(cuentas, totalUnits, descartadas, errores) {
+        if (cuentas === 0 && errores > 0) {
+            Swal.fire('Error', 'No se pudo leer el/los Excel de ventas de Mercado Libre.', 'error');
+            statusSalesMl.textContent = 'Error al leer';
+            return;
+        }
+        dropSalesMl.classList.add('drag-over');
+        statusSalesMl.textContent = `✓ ${cuentas} cuenta/s — ${salesMLMap.size} SKUs, ${fmt(totalUnits)} uds.`
+            + (descartadas ? ` (${descartadas} canceladas/devueltas descartadas)` : '')
+            + (errores ? ` (${errores} archivo/s con error)` : '');
+        statusSalesMl.classList.add('uploaded');
+        tryRenderPedidos();
     }
 
     // --- PARSE STOCK ---
@@ -1979,7 +1999,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
 
                 let headerIdx = 0, skuIdx = 1, descIdx = 2;
-                let cgilIdx = 5, sMarzoIdx = 6, sMarzo1435Idx = 7, fullIdx = 8, costIdx = 9;
+                let cgilIdx = 5, sMarzoIdx = 6, sMarzo1435Idx = 7, fullIdx = 8, caminoIdx = -1, costIdx = 9;
 
                 for (let i = 0; i < Math.min(rows.length, 15); i++) {
                     const row = rows[i];
@@ -1998,6 +2018,9 @@ btnDownloadRestock.addEventListener('click', () => {
                         if (tSm14 !== -1) sMarzo1435Idx = tSm14;
                         const tFull  = cols.findIndex(c => c && (c.includes('full') || c.includes('ml full')));
                         if (tFull !== -1) fullIdx = tFull;
+                        // "En camino" = mercadería que ya está por recibirse (col J en el stock_todo).
+                        const tCamino = cols.findIndex(c => c && (c.includes('en camino') || c.includes('camino') || c.includes('recibir') || c.includes('transito') || c.includes('tránsito') || c.includes('pendiente')));
+                        if (tCamino !== -1) caminoIdx = tCamino;
                         const tCost  = cols.findIndex(c => c && (c.includes('costo') || c === 'cost'));
                         if (tCost !== -1) costIdx = tCost;
                         break;
@@ -2015,10 +2038,11 @@ btnDownloadRestock.addEventListener('click', () => {
                     const sMarzo     = parseInt(row[sMarzoIdx])     || 0;
                     const sMarzo1435 = parseInt(row[sMarzo1435Idx]) || 0;
                     const full       = parseInt(row[fullIdx])       || 0;
+                    const enCamino   = caminoIdx !== -1 ? (parseInt(row[caminoIdx]) || 0) : 0;
                     const costo      = parseFloat(row[costIdx])     || 0;
                     const ex = stockMap.get(sku);
-                    if (ex) { ex.cgil += cgil; ex.sMarzo += sMarzo; ex.sMarzo1435 += sMarzo1435; ex.full += full; }
-                    else stockMap.set(sku, { sku, descripcion: desc, cgil, sMarzo, sMarzo1435, full, costo });
+                    if (ex) { ex.cgil += cgil; ex.sMarzo += sMarzo; ex.sMarzo1435 += sMarzo1435; ex.full += full; ex.enCamino += enCamino; }
+                    else stockMap.set(sku, { sku, descripcion: desc, cgil, sMarzo, sMarzo1435, full, enCamino, costo });
                 }
 
                 statusStock.textContent = `✓ ${file.name} — ${stockMap.size} SKUs en stock.`;
@@ -2265,6 +2289,7 @@ btnDownloadRestock.addEventListener('click', () => {
 
             const sucursales = stock ? (stock.cgil + stock.sMarzo + stock.sMarzo1435) : 0;
             const full       = stock ? stock.full : 0;
+            const enCamino   = stock ? (stock.enCamino || 0) : 0;
             const totalStock = sucursales + full;
             const totalSold  = sale ? sale.unidades : 0;
 
@@ -2280,7 +2305,7 @@ btnDownloadRestock.addEventListener('click', () => {
 
             const candidate = {
                 sku, desc, marca, medida, modelo,
-                totalSold, sucursales, full, totalStock,
+                totalSold, sucursales, full, enCamino, totalStock,
                 hasStock: !!stock, hasSales: !!sale,
                 precioLista, precioOportunidad, enOferta, costoStock,
                 ofertaFuente: oport ? etiquetaFuente(oport.fuente) : ''
@@ -2294,6 +2319,7 @@ btnDownloadRestock.addEventListener('click', () => {
             const totalSold   = list.reduce((s, r) => s + r.totalSold, 0);
             const sucursales  = list.reduce((s, r) => s + r.sucursales, 0);
             const full        = list.reduce((s, r) => s + r.full, 0);
+            const enCamino    = list.reduce((s, r) => s + (r.enCamino || 0), 0);
             const totalStock  = sucursales + full;
             const hasStock    = list.some(r => r.hasStock);
             const hasSales    = list.some(r => r.hasSales);
@@ -2317,7 +2343,8 @@ btnDownloadRestock.addEventListener('click', () => {
             const skusAlt = list.filter(r => r !== winner).map(r => r.sku);
 
             const monthly     = totalSold / monthsSales;
-            const needed      = hasStock ? Math.max(0, Math.ceil(monthly * M - totalStock)) : 0;
+            // Se descuenta lo que ya está "en camino" (por recibir): no hace falta volver a pedirlo.
+            const needed      = hasStock ? Math.max(0, Math.ceil(monthly * M - totalStock - enCamino)) : 0;
             // Solo se recomienda comprar marcas que vende Guerrini (el proveedor de este pedido).
             const esGuerrini  = esMarcaGuerrini(winner.marca, winner.desc);
             const recommended = (hasStock && esGuerrini) ? redondearPedido(needed) : 0;
@@ -2326,7 +2353,7 @@ btnDownloadRestock.addEventListener('click', () => {
             pedidosResults.push({
                 sku: winner.sku, skusAlt, desc: winner.desc, marca: winner.marca, medida: winner.medida, modelo: winner.modelo,
                 dibujo: dibujoDeDesc(winner.desc),
-                totalSold, sucursales, full, totalStock, hasStock, hasSales,
+                totalSold, sucursales, full, enCamino, totalStock, hasStock, hasSales,
                 needed, recommended, costo, costoStock: costoStockFallback, precioLista, precioOportunidad, investment,
                 enOferta, ofertaFuente: winner.ofertaFuente, fuentePrecio
             });
@@ -2386,6 +2413,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 <td style="text-align:center;">${item.hasSales ? item.totalSold : '—'}</td>
                 <td style="text-align:center;">${item.hasStock ? item.sucursales : '—'}</td>
                 <td style="text-align:center;">${item.hasStock ? item.full : '—'}</td>
+                <td style="text-align:center;" title="Mercadería en camino (ya por recibirse). Se descuenta del pedido.">${item.hasStock && item.enCamino > 0 ? `<span style="color:#38bdf8; font-weight:600;">${item.enCamino}</span>` : (item.hasStock ? '0' : '—')}</td>
                 <td style="text-align:center;" title="${item.recommended > 0 ? `Necesidad calculada: ${item.needed} — redondeado a ${item.recommended}` : ''}"><strong style="color:${item.recommended > 0 ? '#22c55e' : 'inherit'};">${item.recommended || '—'}</strong></td>
                 <td style="text-align:center;">${ofertaCell}</td>
                 <td style="text-align:center;">${item.costo > 0 ? '$' + fmt(item.costo) : '—'}</td>
@@ -2419,6 +2447,7 @@ btnDownloadRestock.addEventListener('click', () => {
             'Ventas': item.hasSales ? item.totalSold : '',
             'Total Sucursales': item.hasStock ? item.sucursales : '',
             'Stock ML Full': item.hasStock ? item.full : '',
+            'En Camino (por recibir)': item.hasStock ? item.enCamino : '',
             'Cantidad a Comprar': item.recommended || '',
             // Precio efectivo para sumar directo: si está en oferta muestra el precio de oportunidad,
             // si no, el de lista. Así una sola columna sirve para el total.
@@ -2433,7 +2462,7 @@ btnDownloadRestock.addEventListener('click', () => {
         const XLib = (typeof XLSXStyle !== 'undefined' && XLSXStyle) ? XLSXStyle : XLSX;
         const ws = XLib.utils.json_to_sheet(data);
         ws['!cols'] = [
-            {wch:12},{wch:16},{wch:14},{wch:14},{wch:8},{wch:45},{wch:10},{wch:16},{wch:12},{wch:16},{wch:20},{wch:18},{wch:16},{wch:16},{wch:32},{wch:16}
+            {wch:12},{wch:16},{wch:14},{wch:14},{wch:8},{wch:45},{wch:10},{wch:16},{wch:12},{wch:18},{wch:16},{wch:20},{wch:18},{wch:16},{wch:16},{wch:32},{wch:16}
         ];
 
         // Bandas de color por grupo de medida: todas las filas de la misma medida comparten color,

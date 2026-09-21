@@ -464,7 +464,7 @@ const statsNuevos = {
 let dataMlNuevos = null;
 let dataSysNuevos = null;
 let finalResultsNuevos = [];
-let mlWbNuevos = null;          // workbook original de la planilla de ML (para re-subir)
+let mlArrayBufferNuevos = null; // bytes originales de la planilla de ML (para re-subir)
 let mlSheetNameNuevos = null;   // hoja de datos de esa planilla ("Publicaciones")
 
 function setupDropZoneNuevos(dropZone, fileInput, statusElement, type) {
@@ -525,9 +525,9 @@ function handleFileSelectNuevos(input, statusElement, type) {
             
             if (type === 'ml') {
                 dataMlNuevos = parseMl(json);
-                // Se guarda el workbook original tal cual para poder devolver la planilla
-                // de ML re-subible, cambiando únicamente la columna de stock.
-                mlWbNuevos = workbook;
+                // Se guarda el archivo original en crudo para poder devolver la planilla
+                // de ML re-subible. Se re-lee limpio en cada descarga (sin arrastrar ediciones).
+                mlArrayBufferNuevos = e.target.result;
                 mlSheetNameNuevos = targetSheetName;
             } else if (type === 'sys') {
                 dataSysNuevos = parseSysNuevos(json);
@@ -742,16 +742,37 @@ btnDownloadNuevos.addEventListener('click', () => {
 });
 
 // --- DESCARGAR PLANILLA DE ML CON EL STOCK ACTUALIZADO ---
-// Devuelve la MISMA planilla que subió el usuario (todas sus hojas y filas intactas),
-// pisando solo la celda de stock (columna H / STOCK_FLEX) de los SKU que completó en la tabla.
-// Así puede re-subirla a ML y actualizar todo de una, sin editar publicación por publicación.
+// Devuelve la planilla de ML con SOLO las filas que el usuario editó (encabezados + esos SKU),
+// pisando su celda de stock (columna H / STOCK_FLEX). Las publicaciones que no tocó no van en
+// el archivo, así ML no las modifica al re-subir. Se re-lee el original limpio en cada descarga.
 function normSkuMl(s) {
     return String(s == null ? '' : s).replace(/^['"]+/, '').replace(/['"]+$/, '').trim().toUpperCase();
 }
 
+// Arma una hoja nueva con solo las filas indicadas (en orden), renumeradas desde 0,
+// copiando las celdas tal cual (conserva tipos y valores). Mantiene anchos y merges del encabezado.
+function recortarHojaMl(ws, keepRows) {
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    const out = {};
+    let newR = 0;
+    keepRows.forEach(origR => {
+        for (let c = range.s.c; c <= range.e.c; c++) {
+            const src = ws[XLSX.utils.encode_cell({ r: origR, c })];
+            if (src !== undefined) out[XLSX.utils.encode_cell({ r: newR, c })] = src;
+        }
+        newR++;
+    });
+    out['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: range.s.c }, e: { r: Math.max(0, newR - 1), c: range.e.c } });
+    if (ws['!cols']) out['!cols'] = ws['!cols'];
+    // Solo se conservan los merges que caen dentro del bloque de encabezado (mismas filas).
+    const headerCount = keepRows.filter((r, i) => r === i).length;
+    if (ws['!merges']) out['!merges'] = ws['!merges'].filter(m => m.e.r < headerCount);
+    return out;
+}
+
 const btnDownloadMlPlanilla = document.getElementById('btn-download-ml-planilla');
 if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () => {
-    if (!mlWbNuevos) {
+    if (!mlArrayBufferNuevos) {
         Swal.fire('Falta la planilla de ML', 'Primero subí y analizá el Excel de Mercado Libre.', 'info');
         return;
     }
@@ -771,7 +792,8 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
         return;
     }
 
-    const wb = mlWbNuevos;
+    // Se lee el original limpio para no arrastrar ediciones de descargas previas.
+    const wb = XLSX.read(mlArrayBufferNuevos, { type: 'array' });
     const sheetName = (mlSheetNameNuevos && wb.Sheets[mlSheetNameNuevos])
         ? mlSheetNameNuevos
         : (wb.SheetNames.includes('Publicaciones') ? 'Publicaciones' : wb.SheetNames[wb.SheetNames.length - 1]);
@@ -794,21 +816,42 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
         }
     }
 
+    // Primera fila de datos: la primera que tiene un N° de publicación (MLA...) en la columna B.
+    let dataStart = -1;
+    for (let r = range.s.r; r <= range.e.r; r++) {
+        const b = ws[XLSX.utils.encode_cell({ r, c: 1 })];
+        if (b && b.v != null && /^MLA/i.test(String(b.v).trim())) { dataStart = r; break; }
+    }
+    if (dataStart === -1) dataStart = 5; // fallback: los datos arrancan en la fila 6
+
+    // Filas de encabezado (se conservan tal cual) + solo las filas de datos que el usuario editó.
+    const headerRows = [];
+    for (let r = range.s.r; r < dataStart; r++) headerRows.push(r);
+
+    const editedRows = [];
     let changed = 0;
     const found = new Set();
-    for (let r = range.s.r; r <= range.e.r; r++) {
+    for (let r = dataStart; r <= range.e.r; r++) {
         const skuCell = ws[XLSX.utils.encode_cell({ r, c: skuCol })];
         if (!skuCell || skuCell.v == null) continue;
         const key = normSkuMl(skuCell.v);
         if (!updates.has(key)) continue;
-        const addr = XLSX.utils.encode_cell({ r, c: stockCol });
-        ws[addr] = { t: 'n', v: updates.get(key) };
+        ws[XLSX.utils.encode_cell({ r, c: stockCol })] = { t: 'n', v: updates.get(key) };
+        editedRows.push(r);
         changed++;
         found.add(key);
     }
 
     const notFound = [];
     updates.forEach((_, k) => { if (!found.has(k)) notFound.push(k); });
+
+    if (editedRows.length === 0) {
+        Swal.fire('Sin coincidencias', 'Ninguno de los SKU que completaste aparece en la planilla de ML.' + (notFound.length ? '<br><br>' + notFound.join(', ') : ''), 'warning');
+        return;
+    }
+
+    // Se reemplaza la hoja de publicaciones por la versión recortada (encabezados + editadas).
+    wb.Sheets[sheetName] = recortarHojaMl(ws, headerRows.concat(editedRows));
 
     const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -824,7 +867,7 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
 
     Swal.fire({
         title: '¡Planilla lista!',
-        html: `Se actualizó el stock de <strong>${changed}</strong> SKU en la planilla de ML.` +
+        html: `La planilla incluye <strong>solo los ${changed}</strong> SKU que editaste (las demás publicaciones no se tocan).` +
               (notFound.length ? `<br><br><span style="color:#f59e0b;">No se encontraron en la planilla:</span> ${notFound.join(', ')}` : '') +
               `<br><br>Subila a Mercado Libre tal cual (Modificar publicaciones → subir Excel).`,
         icon: 'success',

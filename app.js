@@ -37,6 +37,38 @@ tabBtns.forEach(btn => {
     });
 });
 
+// --- COPIAR SKU AL PORTAPAPELES ---
+// Copia el SKU y muestra un check breve en el botón como confirmación.
+function copySku(sku, btn) {
+    const text = String(sku == null ? '' : sku).trim();
+    if (!text) return;
+    const done = () => {
+        if (!btn) return;
+        const prev = btn.innerHTML;
+        btn.classList.add('copied');
+        btn.innerHTML = '<i class="fa-solid fa-check"></i>';
+        setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = prev; }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopySku(text, done));
+    } else {
+        fallbackCopySku(text, done);
+    }
+}
+function fallbackCopySku(text, cb) {
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (cb) cb();
+    } catch (e) { console.error('No se pudo copiar el SKU', e); }
+}
+
 // Drag and drop handlers
 function setupDropZone(dropZone, fileInput, statusElement, type) {
     dropZone.addEventListener('click', () => fileInput.click());
@@ -74,8 +106,11 @@ function setupDropZone(dropZone, fileInput, statusElement, type) {
     });
 }
 
-setupDropZone(dropZoneMl, fileMl, statusMl, 'ml');
-setupDropZone(dropZoneSys, fileSys, statusSys, 'sys');
+// Auditoría Margaría retirada: sus elementos ya no existen en el HTML, se protege el acceso.
+if (dropZoneMl && dropZoneSys) {
+    setupDropZone(dropZoneMl, fileMl, statusMl, 'ml');
+    setupDropZone(dropZoneSys, fileSys, statusSys, 'sys');
+}
 
 function handleFileSelect(input, statusElement, type) {
     if (input.files.length === 0) return;
@@ -229,7 +264,7 @@ function parseSysNuevos(rows) {
     return map;
 }
 
-btnProcess.addEventListener('click', () => {
+if (btnProcess) btnProcess.addEventListener('click', () => {
     btnProcess.disabled = true;
     btnProcess.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Procesando...';
     
@@ -374,7 +409,7 @@ function renderTable() {
     });
 }
 
-btnDownload.addEventListener('click', () => {
+if (btnDownload) btnDownload.addEventListener('click', () => {
     // Preparar data para XLSX sin la propiedad _badgeClass
     const excelData = finalResults.map(item => {
         return {
@@ -640,16 +675,27 @@ function renderTableNuevos() {
             : item['Stock ML'];
             
         tr.innerHTML = `
-            <td><strong>${item.SKU}</strong></td>
+            <td>
+                <span class="sku-cell">
+                    <strong>${item.SKU}</strong>
+                    <button type="button" class="copy-sku-btn" data-sku="${item.SKU}" title="Copiar SKU" aria-label="Copiar SKU"><i class="fa-regular fa-copy"></i></button>
+                </span>
+            </td>
             <td><span style="font-size: 0.85rem; color: var(--text-secondary);">${item.Title || 'Sin detalle'}</span></td>
             <td>${mlDisplay}</td>
             <td>${item['Stock Sistema']}</td>
             <td><span class="status-badge ${item._badgeClass}">${item.Motivo}</span></td>
         `;
-        
+
         resultsBodyNuevos.appendChild(tr);
     });
 }
+
+// Botón "copiar SKU" en la tabla de auditoría (delegación de eventos).
+resultsBodyNuevos.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-sku-btn');
+    if (btn) copySku(btn.dataset.sku, btn);
+});
 
 btnDownloadNuevos.addEventListener('click', () => {
     const excelData = finalResultsNuevos.map(item => {

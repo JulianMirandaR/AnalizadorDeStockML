@@ -116,10 +116,16 @@
             <section class="results-section hidden" id="results-panel-nuevos">
                 <div class="results-header">
                     <h2><i class="fa-solid fa-chart-pie"></i> Resultados del Análisis</h2>
-                    <button id="btn-download-nuevos" class="btn-secondary">
-                        <i class="fa-solid fa-download"></i>
-                        Descargar Nuevo Excel
-                    </button>
+                    <div class="results-actions">
+                        <button id="btn-download-ml-planilla" class="btn-primary" title="Descarga la planilla de ML tal cual, con el stock corregido solo en los SKU que completaste. Subila a ML para actualizar todo de una.">
+                            <i class="fa-solid fa-cloud-arrow-up"></i>
+                            Descargar planilla para ML (stock)
+                        </button>
+                        <button id="btn-download-nuevos" class="btn-secondary">
+                            <i class="fa-solid fa-download"></i>
+                            Descargar Excel de diferencias
+                        </button>
+                    </div>
                 </div>
                 
                 <div class="stats-grid">

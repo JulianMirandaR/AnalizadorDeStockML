@@ -464,6 +464,8 @@ const statsNuevos = {
 let dataMlNuevos = null;
 let dataSysNuevos = null;
 let finalResultsNuevos = [];
+let mlWbNuevos = null;          // workbook original de la planilla de ML (para re-subir)
+let mlSheetNameNuevos = null;   // hoja de datos de esa planilla ("Publicaciones")
 
 function setupDropZoneNuevos(dropZone, fileInput, statusElement, type) {
     dropZone.addEventListener('click', () => fileInput.click());
@@ -523,10 +525,14 @@ function handleFileSelectNuevos(input, statusElement, type) {
             
             if (type === 'ml') {
                 dataMlNuevos = parseMl(json);
+                // Se guarda el workbook original tal cual para poder devolver la planilla
+                // de ML re-subible, cambiando únicamente la columna de stock.
+                mlWbNuevos = workbook;
+                mlSheetNameNuevos = targetSheetName;
             } else if (type === 'sys') {
                 dataSysNuevos = parseSysNuevos(json);
             }
-            
+
             checkReadyNuevos();
         } catch (error) {
             Swal.fire('Error', 'No se pudo leer el archivo Excel/CSV.', 'error');
@@ -674,12 +680,21 @@ function renderTableNuevos() {
             ? `${item['Stock ML']} <span style="font-size: 0.8rem; color: var(--warning);">(x${item.Multiplier})</span>`
             : item['Stock ML'];
             
+        const enML = item['Stock ML'] !== 'No existe';
+        const stockInput = enML
+            ? `<div class="ml-stock-field" title="Stock que se subirá a Mercado Libre para este SKU. Dejalo vacío si no querés cambiarlo.">
+                    <i class="fa-solid fa-arrow-right-to-bracket"></i>
+                    <input type="number" class="ml-stock-input" data-sku="${item.SKU}" placeholder="${item['Stock Sistema']}" min="0" step="1" inputmode="numeric">
+               </div>`
+            : `<div class="ml-stock-field ml-stock-na" title="No existe como publicación en ML: no se puede actualizar por planilla.">—</div>`;
+
         tr.innerHTML = `
             <td>
                 <span class="sku-cell">
                     <strong>${item.SKU}</strong>
                     <button type="button" class="copy-sku-btn" data-sku="${item.SKU}" title="Copiar SKU" aria-label="Copiar SKU"><i class="fa-regular fa-copy"></i></button>
                 </span>
+                ${stockInput}
             </td>
             <td><span style="font-size: 0.85rem; color: var(--text-secondary);">${item.Title || 'Sin detalle'}</span></td>
             <td>${mlDisplay}</td>
@@ -724,6 +739,97 @@ btnDownloadNuevos.addEventListener('click', () => {
     
     const dateStr = new Date().toISOString().split('T')[0];
     XLSX.writeFile(wb, `Conciliacion_Nuevos_${dateStr}.xlsx`);
+});
+
+// --- DESCARGAR PLANILLA DE ML CON EL STOCK ACTUALIZADO ---
+// Devuelve la MISMA planilla que subió el usuario (todas sus hojas y filas intactas),
+// pisando solo la celda de stock (columna H / STOCK_FLEX) de los SKU que completó en la tabla.
+// Así puede re-subirla a ML y actualizar todo de una, sin editar publicación por publicación.
+function normSkuMl(s) {
+    return String(s == null ? '' : s).replace(/^['"]+/, '').replace(/['"]+$/, '').trim().toUpperCase();
+}
+
+const btnDownloadMlPlanilla = document.getElementById('btn-download-ml-planilla');
+if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () => {
+    if (!mlWbNuevos) {
+        Swal.fire('Falta la planilla de ML', 'Primero subí y analizá el Excel de Mercado Libre.', 'info');
+        return;
+    }
+
+    // Junta los valores que el usuario cargó en los casilleros.
+    const updates = new Map(); // SKU normalizado -> stock (número)
+    document.querySelectorAll('#results-body-nuevos .ml-stock-input').forEach(inp => {
+        const v = String(inp.value).trim();
+        if (v === '') return;
+        const n = parseInt(v, 10);
+        if (isNaN(n) || n < 0) return;
+        updates.set(normSkuMl(inp.dataset.sku), n);
+    });
+
+    if (updates.size === 0) {
+        Swal.fire('Sin cambios', 'Completá el stock de al menos un SKU (los que están en rojo o azul) antes de descargar.', 'info');
+        return;
+    }
+
+    const wb = mlWbNuevos;
+    const sheetName = (mlSheetNameNuevos && wb.Sheets[mlSheetNameNuevos])
+        ? mlSheetNameNuevos
+        : (wb.SheetNames.includes('Publicaciones') ? 'Publicaciones' : wb.SheetNames[wb.SheetNames.length - 1]);
+    const ws = wb.Sheets[sheetName];
+    if (!ws || !ws['!ref']) {
+        Swal.fire('Error', 'No se pudo leer la hoja de publicaciones de la planilla de ML.', 'error');
+        return;
+    }
+
+    const range = XLSX.utils.decode_range(ws['!ref']);
+
+    // Detecta la columna de SKU y la de stock por el encabezado (con defaults E y H).
+    let skuCol = 4, stockCol = 7;
+    for (let r = range.s.r; r <= Math.min(range.s.r + 6, range.e.r); r++) {
+        for (let c = range.s.c; c <= range.e.c; c++) {
+            const cell = ws[XLSX.utils.encode_cell({ r, c })];
+            const val = cell && cell.v != null ? String(cell.v).trim().toUpperCase() : '';
+            if (val === 'SKU') skuCol = c;
+            if (val === 'STOCK_FLEX' || val === 'EN MI DEPOSITO' || val === 'EN MI DEPÓSITO') stockCol = c;
+        }
+    }
+
+    let changed = 0;
+    const found = new Set();
+    for (let r = range.s.r; r <= range.e.r; r++) {
+        const skuCell = ws[XLSX.utils.encode_cell({ r, c: skuCol })];
+        if (!skuCell || skuCell.v == null) continue;
+        const key = normSkuMl(skuCell.v);
+        if (!updates.has(key)) continue;
+        const addr = XLSX.utils.encode_cell({ r, c: stockCol });
+        ws[addr] = { t: 'n', v: updates.get(key) };
+        changed++;
+        found.add(key);
+    }
+
+    const notFound = [];
+    updates.forEach((_, k) => { if (!found.has(k)) notFound.push(k); });
+
+    const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const dateStr = new Date().toISOString().split('T')[0];
+    a.download = `Planilla_ML_stock_${dateStr}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    Swal.fire({
+        title: '¡Planilla lista!',
+        html: `Se actualizó el stock de <strong>${changed}</strong> SKU en la planilla de ML.` +
+              (notFound.length ? `<br><br><span style="color:#f59e0b;">No se encontraron en la planilla:</span> ${notFound.join(', ')}` : '') +
+              `<br><br>Subila a Mercado Libre tal cual (Modificar publicaciones → subir Excel).`,
+        icon: 'success',
+        confirmButtonColor: '#3b82f6'
+    });
 });
 
 // --- NEW RENTABILIDAD LOGIC ---

@@ -180,6 +180,58 @@ body {
     border-color: var(--success);
 }
 
+/* Casillero de "stock a subir a ML" en la celda del SKU */
+.ml-stock-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.ml-stock-field i {
+    font-size: 0.7rem;
+    opacity: 0.7;
+}
+
+.ml-stock-field.ml-stock-na {
+    opacity: 0.5;
+    padding-left: 0.15rem;
+}
+
+.ml-stock-input {
+    width: 68px;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--border-color);
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.85rem;
+    text-align: center;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.ml-stock-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+.ml-stock-input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.55;
+}
+
+/* Grupo de botones en el encabezado de resultados */
+.results-actions {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
 .tab-content {
     display: none;
     flex-direction: column;

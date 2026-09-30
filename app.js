@@ -742,38 +742,47 @@ btnDownloadNuevos.addEventListener('click', () => {
 });
 
 // --- DESCARGAR PLANILLA DE ML CON EL STOCK ACTUALIZADO ---
-// Devuelve la planilla de ML con SOLO las filas que el usuario editó (encabezados + esos SKU),
-// pisando su celda de stock (columna H / STOCK_FLEX). Las publicaciones que no tocó no van en
-// el archivo, así ML no las modifica al re-subir. Se re-lee el original limpio en cada descarga.
+// Edita los BYTES internos del .xlsx original (es un zip) y cambia únicamente las celdas de stock
+// (columna STOCK_FLEX / "En mi depósito") de los SKU que el usuario completó. NO se regenera el
+// archivo con la librería: así ML recibe su plantilla idéntica (hojas ocultas, imágenes, estilos,
+// validaciones) con solo los números tocados, y la acepta al re-subir. Las publicaciones que no
+// tocaste quedan con su stock original, así ML no las modifica.
 function normSkuMl(s) {
     return String(s == null ? '' : s).replace(/^['"]+/, '').replace(/['"]+$/, '').trim().toUpperCase();
 }
 
-// Arma una hoja nueva con solo las filas indicadas (en orden), renumeradas desde 0,
-// copiando las celdas tal cual (conserva tipos y valores). Mantiene anchos y merges del encabezado.
-function recortarHojaMl(ws, keepRows) {
-    const range = XLSX.utils.decode_range(ws['!ref']);
-    const out = {};
-    let newR = 0;
-    keepRows.forEach(origR => {
-        for (let c = range.s.c; c <= range.e.c; c++) {
-            const src = ws[XLSX.utils.encode_cell({ r: origR, c })];
-            if (src !== undefined) out[XLSX.utils.encode_cell({ r: newR, c })] = src;
-        }
-        newR++;
-    });
-    out['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: range.s.c }, e: { r: Math.max(0, newR - 1), c: range.e.c } });
-    if (ws['!cols']) out['!cols'] = ws['!cols'];
-    // Solo se conservan los merges que caen dentro del bloque de encabezado (mismas filas).
-    const headerCount = keepRows.filter((r, i) => r === i).length;
-    if (ws['!merges']) out['!merges'] = ws['!merges'].filter(m => m.e.r < headerCount);
-    return out;
+// Ubica el XML de una hoja por su nombre, dentro del zip ya descomprimido (map name -> path).
+function rutaHojaXml(zipObj, sheetName) {
+    const dec = new TextDecoder();
+    const wbXml = zipObj['xl/workbook.xml'] ? dec.decode(zipObj['xl/workbook.xml']) : '';
+    const relsXml = zipObj['xl/_rels/workbook.xml.rels'] ? dec.decode(zipObj['xl/_rels/workbook.xml.rels']) : '';
+    if (!wbXml || !relsXml) return null;
+    const unesc = s => String(s).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+    let rid = null;
+    const tags = wbXml.match(/<sheet\b[^>]*>/g) || [];
+    for (const t of tags) {
+        const nm = (t.match(/name="([^"]*)"/) || [])[1];
+        const id = (t.match(/r:id="([^"]*)"/) || [])[1];
+        if (nm != null && unesc(nm) === sheetName) { rid = id; break; }
+    }
+    if (!rid) return null;
+    const rel = relsXml.match(new RegExp('<Relationship\\b[^>]*Id="' + rid + '"[^>]*>'));
+    if (!rel) return null;
+    let target = (rel[0].match(/Target="([^"]*)"/) || [])[1];
+    if (!target) return null;
+    target = target.replace(/^\//, '');
+    if (!target.startsWith('xl/')) target = 'xl/' + target;
+    return target;
 }
 
 const btnDownloadMlPlanilla = document.getElementById('btn-download-ml-planilla');
 if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () => {
     if (!mlArrayBufferNuevos) {
         Swal.fire('Falta la planilla de ML', 'Primero subí y analizá el Excel de Mercado Libre.', 'info');
+        return;
+    }
+    if (typeof fflate === 'undefined') {
+        Swal.fire('Error', 'No se pudo cargar la librería para editar el Excel (fflate). Revisá tu conexión y recargá.', 'error');
         return;
     }
 
@@ -792,7 +801,7 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
         return;
     }
 
-    // Se lee el original limpio para no arrastrar ediciones de descargas previas.
+    // 1) Con la librería solo LOCALIZAMOS qué celdas de stock hay que cambiar (no reescribimos nada).
     const wb = XLSX.read(mlArrayBufferNuevos, { type: 'array' });
     const sheetName = (mlSheetNameNuevos && wb.Sheets[mlSheetNameNuevos])
         ? mlSheetNameNuevos
@@ -804,9 +813,7 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
     }
 
     const range = XLSX.utils.decode_range(ws['!ref']);
-
-    // Detecta la columna de SKU y la de stock por el encabezado (con defaults E y H).
-    let skuCol = 4, stockCol = 7;
+    let skuCol = 4, stockCol = 7; // defaults E y H
     for (let r = range.s.r; r <= Math.min(range.s.r + 6, range.e.r); r++) {
         for (let c = range.s.c; c <= range.e.c; c++) {
             const cell = ws[XLSX.utils.encode_cell({ r, c })];
@@ -816,28 +823,15 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
         }
     }
 
-    // Primera fila de datos: la primera que tiene un N° de publicación (MLA...) en la columna B.
-    let dataStart = -1;
-    for (let r = range.s.r; r <= range.e.r; r++) {
-        const b = ws[XLSX.utils.encode_cell({ r, c: 1 })];
-        if (b && b.v != null && /^MLA/i.test(String(b.v).trim())) { dataStart = r; break; }
-    }
-    if (dataStart === -1) dataStart = 5; // fallback: los datos arrancan en la fila 6
-
-    // Filas de encabezado (se conservan tal cual) + solo las filas de datos que el usuario editó.
-    const headerRows = [];
-    for (let r = range.s.r; r < dataStart; r++) headerRows.push(r);
-
-    const editedRows = [];
+    const cellEdits = {}; // "H270" -> 5
     let changed = 0;
     const found = new Set();
-    for (let r = dataStart; r <= range.e.r; r++) {
+    for (let r = range.s.r; r <= range.e.r; r++) {
         const skuCell = ws[XLSX.utils.encode_cell({ r, c: skuCol })];
         if (!skuCell || skuCell.v == null) continue;
         const key = normSkuMl(skuCell.v);
         if (!updates.has(key)) continue;
-        ws[XLSX.utils.encode_cell({ r, c: stockCol })] = { t: 'n', v: updates.get(key) };
-        editedRows.push(r);
+        cellEdits[XLSX.utils.encode_cell({ r, c: stockCol })] = updates.get(key);
         changed++;
         found.add(key);
     }
@@ -845,16 +839,47 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
     const notFound = [];
     updates.forEach((_, k) => { if (!found.has(k)) notFound.push(k); });
 
-    if (editedRows.length === 0) {
+    if (changed === 0) {
         Swal.fire('Sin coincidencias', 'Ninguno de los SKU que completaste aparece en la planilla de ML.' + (notFound.length ? '<br><br>' + notFound.join(', ') : ''), 'warning');
         return;
     }
 
-    // Se reemplaza la hoja de publicaciones por la versión recortada (encabezados + editadas).
-    wb.Sheets[sheetName] = recortarHojaMl(ws, headerRows.concat(editedRows));
+    // 2) Editamos los bytes: descomprimimos el zip, tocamos solo el XML de la hoja, y re-comprimimos.
+    let outBytes;
+    try {
+        const zipObj = fflate.unzipSync(new Uint8Array(mlArrayBufferNuevos));
+        const path = rutaHojaXml(zipObj, sheetName) || 'xl/worksheets/sheet' + (wb.SheetNames.indexOf(sheetName) + 1) + '.xml';
+        if (!zipObj[path]) throw new Error('No se encontró el XML de la hoja ' + sheetName);
 
-    const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const dec = new TextDecoder();
+        const enc = new TextEncoder();
+        let xml = dec.decode(zipObj[path]);
+
+        const cellXml = (addr, attrs, v) => {
+            const a = String(attrs || '').replace(/\s*t="[^"]*"/, ''); // se fuerza tipo numérico
+            return '<c r="' + addr + '"' + a + ' t="n"><v>' + v + '</v></c>';
+        };
+
+        Object.keys(cellEdits).forEach(addr => {
+            const v = cellEdits[addr];
+            const selfRe = new RegExp('<c r="' + addr + '"([^>]*?)/>');
+            if (selfRe.test(xml)) {
+                xml = xml.replace(selfRe, (m, a) => cellXml(addr, a, v));
+            } else {
+                const fullRe = new RegExp('<c r="' + addr + '"([^>]*?)>[\\s\\S]*?</c>');
+                xml = xml.replace(fullRe, (m, a) => cellXml(addr, a, v));
+            }
+        });
+
+        zipObj[path] = enc.encode(xml);
+        outBytes = fflate.zipSync(zipObj);
+    } catch (err) {
+        console.error('Error editando la planilla de ML', err);
+        Swal.fire('Error', 'No se pudo generar la planilla: ' + err.message, 'error');
+        return;
+    }
+
+    const blob = new Blob([outBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -867,7 +892,8 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
 
     Swal.fire({
         title: '¡Planilla lista!',
-        html: `La planilla incluye <strong>solo los ${changed}</strong> SKU que editaste (las demás publicaciones no se tocan).` +
+        html: `Se actualizó el stock de <strong>${changed}</strong> publicación/es en la planilla de ML (los SKU que editaste).` +
+              `<br>El resto queda con su stock actual, así ML no lo modifica.` +
               (notFound.length ? `<br><br><span style="color:#f59e0b;">No se encontraron en la planilla:</span> ${notFound.join(', ')}` : '') +
               `<br><br>Subila a Mercado Libre tal cual (Modificar publicaciones → subir Excel).`,
         icon: 'success',

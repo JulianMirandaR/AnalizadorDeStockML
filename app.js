@@ -2731,6 +2731,7 @@ btnDownloadRestock.addEventListener('click', () => {
     const resultsPanel = document.getElementById('results-panel-precios');
     const tbody = document.getElementById('results-body-precios');
     const inputMargenMin = document.getElementById('precios-margen-min');
+    const inputComision = document.getElementById('precios-comision');
     const chkSoloNeumaticos = document.getElementById('precios-solo-neumaticos');
     const inputBuscar = document.getElementById('precios-buscar');
     const chkSoloProblemas = document.getElementById('precios-solo-problemas');
@@ -2787,10 +2788,24 @@ btnDownloadRestock.addEventListener('click', () => {
     // --- Parser: export de Publicaciones enriquecido ---
     const WRONG_FILE_MSG = "Este no parece el archivo correcto. 'Precios ML' necesita el export que incluye las columnas 'Opción de venta', 'Recibimos (neto)', 'Costo c/IVA' y 'Cuotas' (el que antes se llamaba 'publicaciones_Nuevos_Neumaticos_...'). El export plano de precios/stock (con columnas ITEM_ID, PRICE, STOCK_FLEX) no sirve para este análisis.";
 
+    // Flag: true cuando el archivo cargado es el formato plano (editor masivo),
+    // que no trae Recibimos/Comisión/Opción/Cuotas y requiere estimación.
+    let pubFormatoPlano = false;
+
     function parsePublicaciones(rows) {
+        // 1) Formato enriquecido (SKU + MLA, o SKU + Recibimos)
         let hIdx = findHeaderRow(rows, ['SKU', 'MLA']);
         if (hIdx === -1) hIdx = findHeaderRow(rows, ['SKU', 'RECIBIMOS']);
-        if (hIdx === -1) throw new Error(WRONG_FILE_MSG);
+        if (hIdx !== -1) { pubFormatoPlano = false; return parsePubEnriquecido(rows, hIdx); }
+
+        // 2) Formato plano / editor masivo (ITEM_ID + PRICE)
+        const pIdx = findHeaderRow(rows, ['ITEM_ID', 'PRICE']);
+        if (pIdx !== -1) { pubFormatoPlano = true; return parsePubPlano(rows, pIdx); }
+
+        throw new Error(WRONG_FILE_MSG);
+    }
+
+    function parsePubEnriquecido(rows, hIdx) {
         const find = colFinder(rows[hIdx]);
         const cSku    = find('SKU');
         const cMla    = find('MLA');
@@ -2829,6 +2844,47 @@ btnDownloadRestock.addEventListener('click', () => {
                 ventas: cVentas !== -1 ? (toNum(row[cVentas]) || 0) : 0,
                 stock: cStock !== -1 ? (toNum(row[cStock]) || 0) : 0,
                 full: cFull !== -1 ? String(row[cFull] || '').trim() : ''
+            });
+        }
+        return out;
+    }
+
+    // Export plano del editor masivo (columnas ITEM_ID, SKU, TITLE, STOCK_FLEX,
+    // STOCK_FULL, PRICE, SALE_PRICE). No trae Recibimos/Opción/Cuotas: el Recibimos
+    // se estima luego con el % de comisión configurable.
+    function parsePubPlano(rows, hIdx) {
+        const headerUp = rows[hIdx].map(c => String(c).trim().toUpperCase());
+        const cMla   = headerUp.indexOf('ITEM_ID');
+        const cSku   = headerUp.indexOf('SKU');
+        const cTitle = headerUp.indexOf('TITLE');
+        const cFlex  = headerUp.indexOf('STOCK_FLEX');
+        const cFullN = headerUp.indexOf('STOCK_FULL');
+        const cPrice = headerUp.indexOf('PRICE');
+        const cSale  = headerUp.indexOf('SALE_PRICE');
+        if (cMla === -1 || cPrice === -1) throw new Error(WRONG_FILE_MSG);
+        const out = [];
+        for (let i = hIdx + 1; i < rows.length; i++) {
+            const row = rows[i];
+            if (!row || row.length === 0) continue;
+            const mla = row[cMla] ? String(row[cMla]).trim() : '';
+            if (!mla.toUpperCase().startsWith('MLA')) continue; // saltea filas de ayuda/encabezado
+            const sku = (cSku !== -1 && row[cSku] != null) ? String(row[cSku]).trim() : '';
+            const sale = cSale !== -1 ? toNum(row[cSale]) : null;
+            const price = toNum(row[cPrice]);
+            const precio = (sale != null && sale > 0) ? sale : price; // precio de venta real (promo si hay)
+            const fullN = cFullN !== -1 ? toNum(row[cFullN]) : null;
+            out.push({
+                sku,
+                mla,
+                opcion: '',
+                cuotas: '',
+                desc: cTitle !== -1 ? String(row[cTitle] || '').trim() : '',
+                precio,
+                recibimos: null,          // se estima en calcular() con la comisión
+                costo: null,              // se completa desde el stock del sistema
+                ventas: 0,
+                stock: cFlex !== -1 ? (toNum(row[cFlex]) || 0) : 0,
+                full: (fullN != null && fullN > 0) ? 'Sí' : 'No'
             });
         }
         return out;
@@ -2932,17 +2988,25 @@ btnDownloadRestock.addEventListener('click', () => {
 
     // --- Cálculo ---
     function calcular() {
+        const comisionPct = (parseFloat(inputComision.value) || 0) / 100;
         finalResults = dataPub.map(p => {
             let costo = p.costo;
             // Completar costo desde stock_todo (s/IVA -> c/IVA) si falta
             if ((!costo || costo === 0) && dataStock && dataStock[p.sku] != null) {
                 costo = dataStock[p.sku] * IVA;
             }
-            const recibimos = p.recibimos;
+            // Si el archivo no trae "Recibimos" (formato plano), se estima restando
+            // la comisión configurada al precio de venta.
+            let recibimos = p.recibimos;
+            let recibimosEstimado = false;
+            if (recibimos == null && p.precio != null && comisionPct > 0) {
+                recibimos = p.precio * (1 - comisionPct);
+                recibimosEstimado = true;
+            }
             const margen = (recibimos != null && costo != null && costo > 0) ? recibimos - costo : null;
             const margenPct = (margen != null && costo > 0) ? margen / costo : null;
             const ventasMes = dataVentas ? (dataVentas[p.mla] ?? null) : null;
-            return { ...p, costo, margen, margenPct, ventasMes };
+            return { ...p, costo, recibimos, recibimosEstimado, margen, margenPct, ventasMes };
         });
     }
 
@@ -3046,7 +3110,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 <td style="font-size:0.8rem;">${fmtCuotas(r.cuotas)}</td>
                 <td style="font-size:0.85rem;">${r.desc || '—'}</td>
                 <td style="text-align:right;">${fmtMoney(r.precio)}</td>
-                <td style="text-align:right;">${fmtMoney(r.recibimos)}</td>
+                <td style="text-align:right;" title="${r.recibimosEstimado ? 'Estimado con la comisión configurada' : ''}">${r.recibimosEstimado && r.recibimos != null ? '~' : ''}${fmtMoney(r.recibimos)}</td>
                 <td style="text-align:right;">${fmtMoney(r.costo)}</td>
                 <td style="text-align:right; color:${margenColor}; font-weight:600;">${fmtMoney(r.margen)}</td>
                 <td style="text-align:center; color:${margenColor}; font-weight:600;">${fmtPct(r.margenPct)}</td>
@@ -3081,9 +3145,11 @@ btnDownloadRestock.addEventListener('click', () => {
             resultsPanel.classList.remove('hidden');
             btnProcess.innerHTML = 'Analizar Precios';
             btnProcess.disabled = false;
+            const estimado = pubFormatoPlano;
             Swal.fire({
                 title: '¡Análisis completado!',
-                text: `Se analizaron ${finalResults.length} publicaciones.`,
+                html: `Se analizaron <b>${finalResults.length}</b> publicaciones.` +
+                    (estimado ? `<br><br><span style="color:#b45309;">⚠️ Este archivo no trae Recibimos ni Opción/Cuotas. El <b>Recibimos y el margen son estimados</b> con la comisión configurada (${(parseFloat(inputComision.value)||0)}%)${dataStock ? '' : ', y hace falta subir el <b>Stock del Sistema</b> para el costo'}.</span>` : ''),
                 icon: 'success',
                 confirmButtonColor: '#3b82f6'
             });
@@ -3094,6 +3160,8 @@ btnDownloadRestock.addEventListener('click', () => {
         const ev = (el.type === 'text' || el.type === 'number') ? 'input' : 'change';
         el.addEventListener(ev, () => { if (finalResults.length) render(); });
     });
+    // La comisión cambia el Recibimos estimado: hay que recalcular, no solo re-renderizar.
+    inputComision.addEventListener('input', () => { if (dataPub) { calcular(); render(); } });
 
     // --- Exportar a Excel ---
     btnDownload.addEventListener('click', () => {

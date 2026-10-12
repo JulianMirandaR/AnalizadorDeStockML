@@ -2785,9 +2785,12 @@ btnDownloadRestock.addEventListener('click', () => {
     }
 
     // --- Parser: export de Publicaciones enriquecido ---
+    const WRONG_FILE_MSG = "Este no parece el archivo correcto. 'Precios ML' necesita el export que incluye las columnas 'Opción de venta', 'Recibimos (neto)', 'Costo c/IVA' y 'Cuotas' (el que antes se llamaba 'publicaciones_Nuevos_Neumaticos_...'). El export plano de precios/stock (con columnas ITEM_ID, PRICE, STOCK_FLEX) no sirve para este análisis.";
+
     function parsePublicaciones(rows) {
-        const hIdx = findHeaderRow(rows, ['SKU', 'MLA']);
-        if (hIdx === -1) throw new Error("El export de Publicaciones no tiene columnas 'SKU' y 'MLA'.");
+        let hIdx = findHeaderRow(rows, ['SKU', 'MLA']);
+        if (hIdx === -1) hIdx = findHeaderRow(rows, ['SKU', 'RECIBIMOS']);
+        if (hIdx === -1) throw new Error(WRONG_FILE_MSG);
         const find = colFinder(rows[hIdx]);
         const cSku    = find('SKU');
         const cMla    = find('MLA');
@@ -2804,8 +2807,8 @@ btnDownloadRestock.addEventListener('click', () => {
         const headerUp = rows[hIdx].map(c => String(c).trim().toUpperCase());
         let cFull = headerUp.indexOf('FULL');
         if (cFull === -1) cFull = headerUp.findIndex(h => h === 'FULL' || h === 'EN FULL');
-        if (cMla === -1 || cPrecio === -1 || cRecib === -1) {
-            throw new Error("Faltan columnas clave (MLA, Precio comprador o Recibimos) en el export de Publicaciones.");
+        if (cMla === -1 || cPrecio === -1 || cRecib === -1 || cOpcion === -1) {
+            throw new Error(WRONG_FILE_MSG);
         }
         const out = [];
         for (let i = hIdx + 1; i < rows.length; i++) {

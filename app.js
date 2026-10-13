@@ -235,7 +235,9 @@ function parseSysNuevos(rows) {
         let stockSantiago = parseInt(row[6], 10) || 0;     // Col G = Santiago Marzo
         let stockSantiago1435 = parseInt(row[7], 10) || 0; // Col H = Santiago Marzo 1435
         let stockFull = parseInt(row[8], 10) || 0;         // Col I = ML Full
-        let totalStock = stockCoronel + stockSantiago + stockSantiago1435 + stockFull;
+        // El stock de ML Full NO se cuenta en el total de sucursales: es el depósito
+        // de Mercado Libre, no stock propio. Solo suman Coronel Gil, Santiago Marzo y 1435.
+        let totalStock = stockCoronel + stockSantiago + stockSantiago1435;
         
         if (sku !== undefined && sku !== null && sku !== '') {
             sku = sku.toString().replace(/^['"]+/, '').replace(/['"]+$/, '').trim().toUpperCase();

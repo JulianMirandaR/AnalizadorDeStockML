@@ -1445,9 +1445,17 @@ btnProcessRestock.addEventListener('click', () => {
     }, 500);
 });
 
+// Extrae la medida de cubierta de una descripción/título.
+// Soporta "195/60R15", "215 65 R16", "175/65R14", etc. Devuelve "195/60R15" o null.
+function medidaDeDescRestock(desc) {
+    const d = String(desc || '').toUpperCase();
+    const m = d.match(/(\d{3})\s*[\/\s]\s*(\d{2})\s*(?:Z\s*)?R?\s*(\d{2})/);
+    return m ? `${m[1]}/${m[2]}R${m[3]}` : null;
+}
+
 function calcularEnvíosRestock() {
     finalResultsRestock = [];
-    
+
     const targetBase = parseInt(inputRestockTarget.value, 10) || 4;
     const useSales = checkboxRestockUseSales.checked;
     
@@ -1593,7 +1601,20 @@ function calcularEnvíosRestock() {
         });
         countModels++;
     });
-    
+
+    // Stock combinado de los 3 depósitos por ítem, y total por medida de cubierta.
+    const stockPorMedida = {};
+    finalResultsRestock.forEach(item => {
+        item.StockDepositos = item.LocalGil + item.LocalMarzo + item.LocalMarzo1435;
+        item.Medida = medidaDeDescRestock(item.Title);
+        if (item.Medida) {
+            stockPorMedida[item.Medida] = (stockPorMedida[item.Medida] || 0) + item.StockDepositos;
+        }
+    });
+    finalResultsRestock.forEach(item => {
+        item.StockMedida = item.Medida ? stockPorMedida[item.Medida] : item.StockDepositos;
+    });
+
     recalcularEstadisticasGlobalesRestock();
 }
  
@@ -1785,28 +1806,28 @@ btnDownloadRestock.addEventListener('click', () => {
         return {
             'SKU': item.SKU,
             'Detalle del Producto': item.Title,
+            'Medida': item.Medida || '',
             'Ventas (30 días)': item.Ventas,
             'Stock en Full (Apto)': item.Aptas,
             'En camino (Pendiente)': item.Pendientes,
-            'Stock Coronel Gil': item.LocalGil,
-            'Stock Santiago Marzo': item.LocalMarzo,
-            'Stock Santiago Marzo 1435': item.LocalMarzo1435,
+            'Stock Depósitos (Gil+Marzo+1435)': item.StockDepositos,
+            'Stock Total de la Medida': item.StockMedida,
             'Cantidad a Enviar': item.ToSend,
             'Distribución de Origen': item.Sugerencia
         };
     });
-    
+
     const ws = XLSX.utils.json_to_sheet(excelData);
-    
+
     const wscols = [
         {wch: 15}, // SKU
         {wch: 45}, // Detalle
+        {wch: 14}, // Medida
         {wch: 15}, // Ventas
         {wch: 20}, // Apto
         {wch: 20}, // Camino
-        {wch: 20}, // Gil
-        {wch: 20}, // Marzo
-        {wch: 25}, // Marzo 1435
+        {wch: 28}, // Stock Depósitos (combinado)
+        {wch: 22}, // Stock Total de la Medida
         {wch: 20}, // Cantidad a Enviar
         {wch: 55}  // Sugerencia
     ];

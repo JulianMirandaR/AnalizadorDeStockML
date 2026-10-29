@@ -169,6 +169,8 @@ function checkReady() {
 // Columna del depósito "Coronel Gil" (Caja Gil 681) en la planilla de ML. El export trae una
 // columna de stock por depósito (Asicha, Caja Gil 681, Distri BS AS...), así que se busca por
 // el nombre en los encabezados (primeras 5 filas) en vez de por posición.
+// Ese depósito de ML tiene publicado el stock de TODAS las sucursales (Coronel Gil + Santiago
+// Marzo + 1435), por eso se compara contra el total del sistema y no solo contra Coronel Gil.
 // Devuelve el índice de la columna, -1 si la planilla no tiene stock por depósito (export viejo
 // de un solo depósito), y lanza error si tiene depósitos pero ninguno es el de Coronel Gil.
 function colStockGilMl(rows) {
@@ -628,9 +630,9 @@ function analizarDatosNuevos() {
         
         if (combinedSys.hasOwnProperty(skuForSystem)) {
             const sysItem = combinedSys[skuForSystem];
-            const sysStock = sysItem.gilStock; // solo Coronel Gil
+            const sysStock = sysItem.stock;
             const sysDesc = sysItem.descripcion;
-            
+
             if (mlStockEq !== sysStock) {
                 const diff = mlStockEq - sysStock;
                 let motivo = '';
@@ -669,7 +671,7 @@ function analizarDatosNuevos() {
     // Compare System against ML (for missing items)
     for (const sku in combinedSys) {
         const sysItem = combinedSys[sku];
-        const sysStock = sysItem.gilStock; // solo Coronel Gil
+        const sysStock = sysItem.stock;
         const sysDesc = sysItem.descripcion;
 
         if (!dataMlNuevos.hasOwnProperty(sku) && sysStock > 0) {

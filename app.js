@@ -166,15 +166,39 @@ function checkReady() {
 }
 
 // parsing logic
-// parsing logic
+// Columna del depósito "Coronel Gil" (Caja Gil 681) en la planilla de ML. El export trae una
+// columna de stock por depósito (Asicha, Caja Gil 681, Distri BS AS...), así que se busca por
+// el nombre en los encabezados (primeras 5 filas) en vez de por posición.
+// Devuelve el índice de la columna, -1 si la planilla no tiene stock por depósito (export viejo
+// de un solo depósito), y lanza error si tiene depósitos pero ninguno es el de Coronel Gil.
+function colStockGilMl(rows) {
+    let porDeposito = false;
+    for (let r = 0; r < Math.min(rows.length, 5); r++) {
+        const row = rows[r] || [];
+        for (let c = 0; c < row.length; c++) {
+            const val = row[c] == null ? '' : String(row[c]);
+            if (/^STORE_STOCK_QUANTITY/i.test(val)) porDeposito = true;
+            else if (val.length < 40 && /\bgil\b/i.test(val)) return c;
+        }
+    }
+    if (porDeposito) {
+        const err = new Error('Sin columna de depósito Coronel Gil en la planilla de ML');
+        err.userMessage = 'La planilla de ML tiene stock por depósito pero no encontré el de <b>Coronel Gil</b> (Caja Gil 681). Descargala de nuevo incluyendo ese depósito.';
+        throw err;
+    }
+    return -1;
+}
+
 function parseMl(rows) {
     const map = {};
+    const colGil = colStockGilMl(rows);
+    const stockCol = colGil >= 0 ? colGil : 7; // export viejo: columna H
     for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
         if (!row) continue;
-        
+
         let sku = row[4];
-        let stock = row[7];
+        let stock = row[stockCol];
         let title = row[5];
         
         if (sku !== undefined && sku !== null && sku !== '') {
@@ -537,7 +561,7 @@ function handleFileSelectNuevos(input, statusElement, type) {
 
             checkReadyNuevos();
         } catch (error) {
-            Swal.fire('Error', 'No se pudo leer el archivo Excel/CSV.', 'error');
+            Swal.fire({ title: 'Error', html: error.userMessage || 'No se pudo leer el archivo Excel/CSV.', icon: 'error' });
             console.error(error);
         }
     };
@@ -604,7 +628,7 @@ function analizarDatosNuevos() {
         
         if (combinedSys.hasOwnProperty(skuForSystem)) {
             const sysItem = combinedSys[skuForSystem];
-            const sysStock = sysItem.stock;
+            const sysStock = sysItem.gilStock; // solo Coronel Gil
             const sysDesc = sysItem.descripcion;
             
             if (mlStockEq !== sysStock) {
@@ -645,9 +669,9 @@ function analizarDatosNuevos() {
     // Compare System against ML (for missing items)
     for (const sku in combinedSys) {
         const sysItem = combinedSys[sku];
-        const sysStock = sysItem.stock;
+        const sysStock = sysItem.gilStock; // solo Coronel Gil
         const sysDesc = sysItem.descripcion;
-        
+
         if (!dataMlNuevos.hasOwnProperty(sku) && sysStock > 0) {
             cMissingMl++;
             finalResultsNuevos.push({
@@ -823,6 +847,14 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
             if (val === 'SKU') skuCol = c;
             if (val === 'STOCK_FLEX' || val === 'EN MI DEPOSITO' || val === 'EN MI DEPÓSITO') stockCol = c;
         }
+    }
+    // Planilla con stock por depósito: se escribe en el de Coronel Gil (nunca en Asicha u otro).
+    try {
+        const colGil = colStockGilMl(XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }));
+        if (colGil >= 0) stockCol = colGil;
+    } catch (err) {
+        Swal.fire({ title: 'Error', html: err.userMessage || err.message, icon: 'error' });
+        return;
     }
 
     const cellEdits = {}; // "H270" -> 5

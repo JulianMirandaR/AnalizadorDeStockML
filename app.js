@@ -1375,6 +1375,135 @@ let dataMlFullStock = null;
 let dataSysRestock = null;
 let finalResultsRestock = [];
 
+// Ventas AR de Mercado Libre (opcional): si se carga, reemplaza la columna de ventas del Excel de Full.
+const fileMlFullVentas = document.getElementById('file-ml-full-ventas');
+const statusMlFullVentas = document.getElementById('status-ml-full-ventas');
+const dropZoneMlFullVentas = document.getElementById('drop-zone-ml-full-ventas');
+const inputRestockSalesDays = document.getElementById('restock-sales-days');
+const thRestockVentas = document.getElementById('th-restock-ventas');
+let dataVentasFull = null;          // { rows: [{sku, units, ts}], maxTs, minTs, descartadas, fileName }
+let ventasFullLabel = 'Ventas (30 días)';
+
+const MESES_ES_FULL = { enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5, julio: 6,
+    agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11 };
+
+// "3 de noviembre de 2026 11:01 hs." -> timestamp. Acepta también fechas de Excel (serial/Date).
+function parseFechaVentaML(v) {
+    if (v instanceof Date) return v.getTime();
+    if (typeof v === 'number' && v > 20000) return Math.round((v - 25569) * 86400000);
+    const m = String(v || '').toLowerCase().match(/(\d{1,2})\s+de\s+([a-záéíóú]+)\s+de\s+(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+    if (!m || !(m[2] in MESES_ES_FULL)) return null;
+    return new Date(+m[3], MESES_ES_FULL[m[2]], +m[1], +(m[4] || 0), +(m[5] || 0)).getTime();
+}
+
+// Lee el export "Ventas AR". Las columnas se detectan por nombre (ML cambia el layout entre descargas).
+// Se descartan ventas canceladas/devueltas para no inflar la demanda con ventas que no se concretaron.
+function parseVentasFullAR(rows) {
+    let h = -1;
+    for (let i = 0; i < Math.min(rows.length, 20); i++) {
+        const cols = (rows[i] || []).map(c => String(c === undefined || c === null ? '' : c).trim().toLowerCase());
+        if (cols.includes('sku') && cols.includes('unidades')) { h = i; break; }
+    }
+    if (h === -1) {
+        throw new Error("El Excel no tiene las columnas 'SKU' y 'Unidades'. Subí el reporte 'Ventas AR' de Mercado Libre.");
+    }
+    const cols = rows[h].map(c => String(c === undefined || c === null ? '' : c).trim().toLowerCase());
+    const iSku = cols.indexOf('sku');
+    const iUni = cols.indexOf('unidades');
+    const iEstado = cols.indexOf('estado');
+    const iFecha = cols.findIndex(c => c.startsWith('fecha de venta'));
+
+    const out = { rows: [], maxTs: null, minTs: null, descartadas: 0 };
+    for (let i = h + 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row.length === 0) continue;
+        const sku = String(row[iSku] === undefined || row[iSku] === null ? '' : row[iSku]).trim().toUpperCase();
+        if (!sku) continue;
+        const estado = iEstado !== -1 ? String(row[iEstado] || '') : '';
+        if (/cancela|devoluci/i.test(estado)) { out.descartadas++; continue; }
+        const units = parseFloat(row[iUni]) || 0;
+        if (units <= 0) continue;
+        const ts = iFecha !== -1 ? parseFechaVentaML(row[iFecha]) : null;
+        if (ts !== null) {
+            if (out.maxTs === null || ts > out.maxTs) out.maxTs = ts;
+            if (out.minTs === null || ts < out.minTs) out.minTs = ts;
+        }
+        out.rows.push({ sku, units, ts });
+    }
+    return out;
+}
+
+function diasVentasFull() {
+    return Math.max(1, parseInt(inputRestockSalesDays.value, 10) || 30);
+}
+
+// Unidades por SKU dentro de los últimos N días (contados desde la venta más reciente del archivo).
+function ventasPorSkuFull(dias) {
+    if (!dataVentasFull) return null;
+    const cutoff = dataVentasFull.maxTs !== null ? dataVentasFull.maxTs - dias * 86400000 : null;
+    const map = {};
+    dataVentasFull.rows.forEach(r => {
+        if (cutoff !== null && r.ts !== null && r.ts < cutoff) return;
+        map[r.sku] = (map[r.sku] || 0) + r.units;
+    });
+    return map;
+}
+
+function refrescarEstadoVentasFull() {
+    if (!dataVentasFull) return;
+    const dias = diasVentasFull();
+    const map = ventasPorSkuFull(dias);
+    const skus = Object.keys(map).length;
+    const uds = Object.values(map).reduce((a, b) => a + b, 0);
+    const fmtF = (ts) => new Date(ts).toLocaleDateString('es-AR');
+    let rango = '';
+    if (dataVentasFull.maxTs !== null) {
+        const desde = Math.max(dataVentasFull.minTs, dataVentasFull.maxTs - dias * 86400000);
+        rango = ` · ${fmtF(desde)} al ${fmtF(dataVentasFull.maxTs)}`;
+    }
+    statusMlFullVentas.textContent = `✓ ${dataVentasFull.fileName} — ${skus} SKUs, ${Math.round(uds)} uds. en ${dias} días${rango}`
+        + (dataVentasFull.descartadas ? ` (${dataVentasFull.descartadas} canceladas/devueltas descartadas)` : '');
+    statusMlFullVentas.classList.add('uploaded');
+}
+
+function handleVentasFullFile(input) {
+    const file = input.files[0];
+    if (!file) return;
+    statusMlFullVentas.textContent = 'Procesando...';
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+            const ws = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+            dataVentasFull = parseVentasFullAR(rows);
+            dataVentasFull.fileName = file.name;
+            refrescarEstadoVentasFull();
+        } catch (error) {
+            dataVentasFull = null;
+            statusMlFullVentas.textContent = 'Error al leer';
+            statusMlFullVentas.classList.remove('uploaded');
+            Swal.fire('Error', 'No se pudo leer el Excel de ventas: ' + error.message, 'error');
+            console.error(error);
+        }
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+dropZoneMlFullVentas.addEventListener('click', () => fileMlFullVentas.click());
+dropZoneMlFullVentas.addEventListener('dragover', (e) => { e.preventDefault(); dropZoneMlFullVentas.classList.add('drag-over'); });
+dropZoneMlFullVentas.addEventListener('dragleave', () => dropZoneMlFullVentas.classList.remove('drag-over'));
+dropZoneMlFullVentas.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZoneMlFullVentas.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) {
+        fileMlFullVentas.files = e.dataTransfer.files;
+        handleVentasFullFile(fileMlFullVentas);
+    }
+});
+fileMlFullVentas.addEventListener('change', () => handleVentasFullFile(fileMlFullVentas));
+inputRestockSalesDays.addEventListener('input', refrescarEstadoVentasFull);
+
 function setupDropZoneRestock(dropZone, fileInput, statusElement, type) {
     dropZone.addEventListener('click', () => fileInput.click());
     
@@ -1500,12 +1629,18 @@ function calcularEnvíosRestock() {
     ]);
     
     let countModels = 0;
-    
+
+    // Si se cargó el Excel Ventas AR, las ventas salen de ahí (últimos N días) y no del Excel de Full.
+    const diasVentas = diasVentasFull();
+    const ventasAR = ventasPorSkuFull(diasVentas);
+    ventasFullLabel = ventasAR ? `Ventas (${diasVentas} días, ML)` : 'Ventas (30 días)';
+    if (thRestockVentas) thRestockVentas.textContent = ventasAR ? `Ventas (${diasVentas}d · ML)` : 'Ventas (30d)';
+
     allSkus.forEach(sku => {
         const mlItem = dataMlFullStock[sku] || { aptas: 0, pendientes: 0, ventas30: 0, title: '' };
         const mlAptas = mlItem.aptas;
         const mlPendientes = mlItem.pendientes;
-        const mlVentas = mlItem.ventas30;
+        const mlVentas = ventasAR ? (ventasAR[String(sku).trim().toUpperCase()] || 0) : mlItem.ventas30;
         const mlTitle = mlItem.title;
         
         const mlTotal = mlAptas + mlPendientes;
@@ -1841,7 +1976,7 @@ btnDownloadRestock.addEventListener('click', () => {
             'SKU': item.SKU,
             'Detalle del Producto': item.Title,
             'Medida': item.Medida || '',
-            'Ventas (30 días)': item.Ventas,
+            [ventasFullLabel]: item.Ventas,
             'Stock en Full (Apto)': item.Aptas,
             'En camino (Pendiente)': item.Pendientes,
             'Stock Depósitos (Gil+Marzo+1435)': item.StockDepositos,

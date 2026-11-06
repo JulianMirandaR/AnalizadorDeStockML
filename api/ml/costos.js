@@ -49,7 +49,24 @@ async function envio(item, uid, token) {
         const d = r.data || {};
         const c = d.coverage && d.coverage.all_country;
         intentos.push({ ruta: path.split('?')[0] + (path.includes('dimensions=') ? '?dimensions' : path.includes('item_price') ? '?item_id+precio' : ''), estado: r.status, mensaje: d.message || d.error || (c ? 'ok' : '') });
-        if (c && c.list_cost != null) return { costo: c.list_cost, intentos };
+        if (c && c.list_cost != null) return { costo: c.list_cost, intentos, fuente: 'tarifa' };
+    }
+    // Alternativa: lo que ML nos cobró de envío en la última venta de esa publicación
+    // (orden más reciente → costos del envío, parte del vendedor).
+    const o = await ml.mlGet(`/orders/search?seller=${uid}&item=${item.id}&sort=date_desc&limit=5`, token);
+    intentos.push({ ruta: '/orders/search', estado: o.status, mensaje: (o.data && (o.data.message || o.data.error)) || (o.ok ? `${(o.data.results || []).length} ventas` : '') });
+    const ordenes = (o.ok && o.data && Array.isArray(o.data.results)) ? o.data.results : [];
+    for (const orden of ordenes) {
+        const envioId = orden.shipping && orden.shipping.id;
+        if (!envioId) continue;
+        const sc = await ml.mlGet(`/shipments/${envioId}/costs`, token);
+        const vend = sc.ok && sc.data && Array.isArray(sc.data.senders) ? sc.data.senders[0] : null;
+        intentos.push({ ruta: '/shipments/{id}/costs', estado: sc.status, mensaje: (sc.data && (sc.data.message || sc.data.error)) || (vend ? 'ok' : 'sin datos del vendedor') });
+        if (vend && vend.cost != null) {
+            const unidades = (orden.order_items || []).reduce((t, x) => t + (x.quantity || 0), 0) || 1;
+            return { costo: vend.cost / unidades, intentos, fuente: 'ultima_venta', fechaVenta: orden.date_created };
+        }
+        break;
     }
     return { costo: null, intentos };
 }
@@ -82,6 +99,8 @@ module.exports = async (req, res) => {
                 comisionPct: com ? com.pct : null,
                 cargoFijo: com ? com.fijo : null,
                 envio: env.costo,
+                envioFuente: env.fuente || null,
+                envioFechaVenta: env.fechaVenta || null,
                 ...(env.costo == null ? { envioIntentos: env.intentos } : {}),
                 logistica: it.shipping && it.shipping.logistic_type || null,
                 envioGratis: !!(it.shipping && it.shipping.free_shipping),

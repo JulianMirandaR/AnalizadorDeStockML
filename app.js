@@ -3419,19 +3419,30 @@ btnDownloadRestock.addEventListener('click', () => {
         }
     }
 
+    const expandidos = new Set();   // SKU con la lista de competidores desplegada
+    const MAX_CHIPS = 4;
     function compsHtml(it, ev) {
-        const chips = ev.comps.map(c => {
+        const orden = ev.comps.slice().sort((a, b) => (a.precio > 0 ? a.precio : Infinity) - (b.precio > 0 ? b.precio : Infinity));
+        const abierto = expandidos.has(it.sku);
+        const visibles = abierto ? orden : orden.slice(0, MAX_CHIPS);
+        const ocultos = orden.length - visibles.length;
+        const chips = visibles.map(c => {
             const best = ev.rival && c.id === ev.rival.id;
             const label = c.mla || 'Link';
+            const marcas = (c.auto ? `<i class="fa-solid fa-robot comp-auto" title="Encontrado automáticamente en el catálogo de ML"></i>` : '') +
+                (c.full ? `<span class="comp-mini" title="Envío Full">FULL</span>` : '');
             return `<div class="comp-chip${best ? ' best' : ''}" title="${esc(c.url)}">
-                <a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(label)} <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+                ${marcas}<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(label)} <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
                 ${c.vendedor ? `<span class="comp-vend">${esc(c.vendedor)}</span>` : ''}
                 <button class="comp-price" data-act="edit" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Editar precio / datos">${c.precio > 0 ? fmt$(c.precio) : 'sin precio'}</button>
                 ${c.fecha ? `<span class="comp-date" title="Precio actualizado el ${esc(c.fecha)}">${fmtFecha(c.fecha)}</span>` : ''}
                 <button class="comp-del" data-act="del" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Quitar competidor"><i class="fa-solid fa-xmark"></i></button>
             </div>`;
         }).join('');
-        return `${chips}<button class="comp-add" data-act="add" data-sku="${esc(it.sku)}"><i class="fa-solid fa-plus"></i> Competidor</button>`;
+        const mas = ocultos > 0
+            ? `<button class="comp-more" data-act="more" data-sku="${esc(it.sku)}">+${ocultos} más</button>`
+            : (abierto && orden.length > MAX_CHIPS ? `<button class="comp-more" data-act="more" data-sku="${esc(it.sku)}">ver menos</button>` : '');
+        return `${chips}${mas}<button class="comp-add" data-act="add" data-sku="${esc(it.sku)}"><i class="fa-solid fa-plus"></i> Competidor</button>`;
     }
 
     function render() {
@@ -3439,7 +3450,10 @@ btnDownloadRestock.addEventListener('click', () => {
         tbody.innerHTML = filas.map(({ it, ev }) => {
             const mColor = ev.margen == null ? '' : ev.margen < 0 ? 'text-danger' : 'text-success';
             const pubUrl = 'https://articulo.mercadolibre.com.ar/MLA-' + it.mla.replace(/^MLA/i, '');
-            return `<tr class="comp-row comp-${ev.estado}">
+            // Verde: podemos bajar y ganarle. Rojo: para ganarle (o ya hoy) el neto queda debajo del costo.
+            const color = ev.estado === 'bajar' ? 'comp-verde'
+                : (ev.estado === 'no' || (ev.margen != null && ev.margen < 0)) ? 'comp-rojo' : '';
+            return `<tr class="comp-row comp-${ev.estado} ${color}">
                 <td style="font-weight:700; white-space:nowrap;">${esc(it.sku)}</td>
                 <td class="comp-prod">${esc(it.desc)}<div class="comp-sub">${it.nPubs} ${it.nPubs === 1 ? 'publicación' : 'publicaciones'}</div></td>
                 <td style="text-align:center;">${it.stock}</td>
@@ -3515,19 +3529,186 @@ btnDownloadRestock.addEventListener('click', () => {
         const act = btn.dataset.act;
         const comp = (store[sku] || []).find(c => c.id === btn.dataset.id);
         if (act === 'add') editarComp(sku, null);
+        else if (act === 'more') { expandidos.has(sku) ? expandidos.delete(sku) : expandidos.add(sku); render(); }
         else if (act === 'edit' && comp) editarComp(sku, comp);
         else if (act === 'del' && comp) {
             const ok = await Swal.fire({
-                title: '¿Quitar competidor?', text: `${comp.mla || comp.url} de ${sku}`, icon: 'question',
+                title: '¿Quitar competidor?',
+                html: `${esc(comp.mla || comp.url)} de ${esc(sku)}` + (comp.auto && comp.mla ? '<br><small>No se va a volver a agregar en las próximas búsquedas automáticas.</small>' : ''),
+                icon: 'question',
                 showCancelButton: true, confirmButtonText: 'Quitar', cancelButtonText: 'Cancelar', confirmButtonColor: '#ef4444'
             });
             if (!ok.isConfirmed) return;
             store[sku] = (store[sku] || []).filter(c => c.id !== comp.id);
             if (!store[sku].length) delete store[sku];
+            if (comp.auto && comp.mla) ignorar(sku, comp.mla);
             saveStore();
             render();
         }
     });
+
+    // ---------- búsqueda automática en Mercado Libre (API oficial, vía /api/ml/*) ----------
+    // Competidores que el usuario quitó: la búsqueda automática no los vuelve a agregar.
+    // Nuestras otras cuentas de ML: nunca cuentan como competencia (la cuenta conectada se excluye sola).
+    const VENDEDORES_PROPIOS = ['JUANCMARGARIASRL'];
+    const IGNORE_KEY = 'competenciaML.ignorados.v1';
+    let ignorados = (() => { try { return JSON.parse(localStorage.getItem(IGNORE_KEY)) || {}; } catch (e) { return {}; } })();
+    function ignorar(sku, mla) {
+        (ignorados[sku] = ignorados[sku] || []).includes(mla) || ignorados[sku].push(mla);
+        try { localStorage.setItem(IGNORE_KEY, JSON.stringify(ignorados)); } catch (e) { /* sin almacenamiento */ }
+    }
+    const estaIgnorado = (sku, mla) => (ignorados[sku] || []).includes(mla);
+
+    const mlEstado = $('comp-ml-estado');
+    const btnMlConectar = $('btn-comp-ml-conectar');
+    const btnMlBuscar = $('btn-comp-ml-buscar');
+    const mlProg = $('comp-ml-progreso');
+    const mlProgFill = $('comp-ml-barra-fill');
+    const mlProgTxt = $('comp-ml-progreso-txt');
+    let mlConectado = false;
+    let mlBuscando = false;
+
+    function pintarEstadoMl(st) {
+        mlConectado = !!(st && st.conectado);
+        btnMlConectar.hidden = mlConectado;
+        btnMlBuscar.disabled = !mlConectado || mlBuscando;
+        if (!st) {
+            mlEstado.innerHTML = 'La búsqueda automática funciona en la página publicada (<b>analizador-stock-ml.vercel.app</b>), no en una copia local.';
+            btnMlConectar.hidden = true;
+        } else if (mlConectado) {
+            mlEstado.innerHTML = `Conectado a Mercado Libre${st.nickname ? ` como <b>${esc(st.nickname)}</b>` : ''} · <a href="#" id="comp-ml-salir">desconectar</a>`;
+        } else if (st.configurado === false) {
+            mlEstado.innerHTML = `Falta configurar la app de Mercado Libre en Vercel (ML_CLIENT_ID y ML_CLIENT_SECRET). URL de retorno: <code>${esc(st.redirectUri || '')}</code>`;
+            btnMlConectar.hidden = true;
+        } else {
+            mlEstado.textContent = 'No conectado: conectá la cuenta de Mercado Libre para buscar competidores automáticamente.';
+        }
+    }
+    async function consultarEstadoMl() {
+        try {
+            const r = await fetch('/api/ml/status', { credentials: 'same-origin', cache: 'no-store' });
+            const ct = r.headers.get('content-type') || '';
+            pintarEstadoMl(r.ok && ct.includes('json') ? await r.json() : null);
+        } catch (e) { pintarEstadoMl(null); }
+    }
+    consultarEstadoMl();
+
+    mlEstado.addEventListener('click', async (e) => {
+        if (e.target.id !== 'comp-ml-salir') return;
+        e.preventDefault();
+        await fetch('/api/ml/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+        consultarEstadoMl();
+    });
+
+    // El login se hace en una ventana emergente para no perder los Excel ya cargados.
+    btnMlConectar.addEventListener('click', () => {
+        const w = window.open('/api/ml/login', 'ml-login', 'width=620,height=760');
+        if (!w) location.href = '/api/ml/login';
+    });
+    window.addEventListener('message', (e) => {
+        if (e.origin !== location.origin || !e.data || e.data.tipo !== 'ml-login') return;
+        if (e.data.ok) { consultarEstadoMl(); Swal.fire({ title: 'Mercado Libre conectado', icon: 'success', timer: 1600, showConfirmButton: false }); }
+        else Swal.fire('No se pudo conectar', e.data.mensaje || '', 'error');
+    });
+
+    const TAMANO_LOTE = 10;
+    btnMlBuscar.addEventListener('click', async () => {
+        if (!items.length || mlBuscando) return;
+        const lista = items.filter(it => !chkSoloStock.checked || it.stock > 0);
+        const lotes = [];
+        for (let i = 0; i < lista.length; i += TAMANO_LOTE) lotes.push(lista.slice(i, i + TAMANO_LOTE));
+
+        mlBuscando = true;
+        btnMlBuscar.disabled = true;
+        mlProg.hidden = false;
+        const resumen = { conComp: 0, nuevos: 0, sinCatalogo: [], sinComp: 0, actualizados: 0, errores: 0 };
+        let hechos = 0;
+        let abortado = null;
+        for (const lote of lotes) {
+            mlProgTxt.textContent = `Buscando en Mercado Libre... ${hechos} de ${lista.length} SKU`;
+            mlProgFill.style.width = `${Math.round(hechos / lista.length * 100)}%`;
+            // competidores cargados a mano en este lote: se les actualiza el precio
+            const seguir = lote.flatMap(it => compsOf(it.sku).filter(c => !c.auto && c.mla).map(c => c.mla));
+            let data;
+            try {
+                const r = await fetch('/api/ml/competidores', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ skus: lote.map(it => ({ sku: it.sku, mlas: it.mlas })), seguir })
+                });
+                data = await r.json().catch(() => ({}));
+                if (r.status === 401) { abortado = data.error || 'Se perdió la conexión con Mercado Libre.'; break; }
+                if (!r.ok) throw new Error(data.error || `Error ${r.status}`);
+            } catch (err) {
+                console.error(err);
+                resumen.errores += lote.length;
+                hechos += lote.length;
+                continue;
+            }
+            aplicarResultadosMl(lote, data, resumen);
+            hechos += lote.length;
+            saveStore();
+            render();
+        }
+        mlBuscando = false;
+        mlProg.hidden = true;
+        consultarEstadoMl();
+        if (abortado) { Swal.fire('Búsqueda interrumpida', abortado, 'warning'); return; }
+        Swal.fire({
+            title: 'Búsqueda terminada',
+            html: `Se encontraron competidores para <b>${resumen.conComp}</b> SKU (${resumen.nuevos} publicaciones nuevas).` +
+                (resumen.actualizados ? `<br>Se actualizó el precio de <b>${resumen.actualizados}</b> competidores cargados a mano.` : '') +
+                (resumen.sinComp ? `<br>${resumen.sinComp} SKU están en catálogo pero sin otros vendedores.` : '') +
+                (resumen.sinCatalogo.length ? `<br><span style="color:#b45309;">${resumen.sinCatalogo.length} SKU no están en el catálogo de ML: a esos hay que cargarles los competidores a mano.</span>` : '') +
+                (resumen.errores ? `<br><span style="color:#ef4444;">${resumen.errores} SKU no se pudieron consultar (probá de nuevo).</span>` : ''),
+            icon: resumen.errores ? 'warning' : 'success', confirmButtonColor: '#3b82f6'
+        });
+    });
+
+    function aplicarResultadosMl(lote, data, resumen) {
+        const res = data.resultados || {};
+        const seg = data.seguidos || {};
+        lote.forEach(it => {
+            const r = res[it.sku];
+            if (!r) return;
+            const manuales = (store[it.sku] || []).filter(c => !c.auto);
+            // Actualiza precio de los cargados a mano
+            manuales.forEach(c => {
+                const s = c.mla && seg[c.mla];
+                if (s && s.precio > 0) {
+                    if (s.precio !== c.precio) c.fecha = hoy();
+                    c.precio = s.precio;
+                    if (!c.vendedor && s.vendedor) c.vendedor = s.vendedor;
+                    resumen.actualizados++;
+                }
+            });
+            // Los automáticos se reemplazan por los de esta búsqueda
+            const previos = new Map((store[it.sku] || []).filter(c => c.auto).map(c => [c.mla, c]));
+            const manualesMla = new Set(manuales.map(c => c.mla));
+            const nuevos = (r.competidores || [])
+                .filter(c => !manualesMla.has(c.mla) && !estaIgnorado(it.sku, c.mla) &&
+                    !VENDEDORES_PROPIOS.includes(String(c.vendedor || '').toUpperCase()))
+                .map(c => {
+                    const prev = previos.get(c.mla);
+                    if (!prev) resumen.nuevos++;
+                    return {
+                        id: prev ? prev.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                        mla: c.mla,
+                        url: 'https://articulo.mercadolibre.com.ar/MLA-' + c.mla.replace(/^MLA/, ''),
+                        precio: c.precio,
+                        vendedor: c.vendedor || '',
+                        full: !!c.full,
+                        auto: true,
+                        fecha: prev && prev.precio === c.precio ? prev.fecha : hoy()
+                    };
+                });
+            const todos = manuales.concat(nuevos);
+            if (todos.length) store[it.sku] = todos; else delete store[it.sku];
+            if (nuevos.length) resumen.conComp++;
+            else if (r.motivo === 'sin_catalogo' || r.motivo === 'no_encontrada') resumen.sinCatalogo.push(it.sku);
+            else resumen.sinComp++;
+        });
+    }
 
     // ---------- botones ----------
     btnProcess.addEventListener('click', () => {
@@ -3649,7 +3830,7 @@ btnDownloadRestock.addEventListener('click', () => {
             const color = { bajar: 'C6EFCE', no: 'FFC7CE', ganamos: 'FFEB9C' };
             const nCols = Object.keys(data[0]).length;
             filas.forEach(({ ev }, i) => {
-                const rgb = color[ev.estado];
+                const rgb = (ev.margen != null && ev.margen < 0) ? color.no : color[ev.estado];
                 if (!rgb) return;
                 for (let c = 0; c < nCols; c++) {
                     const a = XLib.utils.encode_cell({ r: i + 1, c });

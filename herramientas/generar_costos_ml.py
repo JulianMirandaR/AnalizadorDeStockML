@@ -45,7 +45,8 @@ for r in rows[h + 1:]:
     envneto = -num(r[C['env']]) - num(r[C['ingenv']])
     ventas.append(dict(f=fecha(r[C['fecha']]), mla=str(r[C['mla']] or '').strip().upper(), sku=k[2] if k else sku,
                        md=md, rod=rod, cuotas=str(r[C['cuotas']] or '').strip().lower().startswith('s'),
-                       com=-num(r[C['cargo']]) / ing, env=envneto / (uni * kitn) if envneto > 0 else None))
+                       com=-num(r[C['cargo']]) / ing, env=envneto / (uni * kitn) if envneto > 0 else None,
+                       unidades=uni * kitn))
 
 hasta = max(v['f'] for v in ventas if v['f'])
 desde = hasta - datetime.timedelta(days=DIAS)
@@ -77,6 +78,12 @@ data = {
     'envioPorMedida': agrupar(lambda v: v['md'], 'env', 3),
     'envioPorRodado': agrupar(lambda v: v['rod'], 'env', 1),
 }
+# Neumáticos vendidos por SKU en los últimos DIAS días (los kits cuentan cada neumático)
+ventas_sku = {}
+for v in ventas:
+    if v['sku'] and v['f'] and v['f'] >= desde:
+        ventas_sku[v['sku']] = ventas_sku.get(v['sku'], 0) + v['unidades']
+data['ventasPorSku'] = {k: int(round(x)) for k, x in ventas_sku.items()}
 with open(dst, 'w', encoding='utf-8', newline='\n') as f:
     f.write('// Comisión y envío de referencia de Mercado Libre, calculados del reporte "Ventas AR"\n')
     f.write(f'// (mediana de las ventas de los últimos {DIAS} días al {hasta.isoformat()}; si no alcanzan, todo el historial).\n')

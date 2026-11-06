@@ -571,6 +571,13 @@
                     </div>
                 </div>
 
+                <div class="comp-aviso" id="comp-aviso-datos" hidden></div>
+
+                <details class="comp-cambios" id="comp-cambios" hidden>
+                    <summary id="comp-cambios-resumen"></summary>
+                    <div class="comp-cambios-body" id="comp-cambios-body"></div>
+                </details>
+
                 <div class="stats-grid">
                     <div class="stat-card">
                         <i class="fa-solid fa-users text-info"></i>
@@ -613,6 +620,17 @@
                             <option value="no">No conviene bajar</option>
                             <option value="ganamos">Ya ganamos</option>
                             <option value="sin">Sin competidores cargados</option>
+                        </select>
+                    </label>
+                    <label title="Prioridad: primero donde podemos bajar; dentro de cada grupo, lo que más se vende y donde más caros estamos frente al rival">
+                        Ordenar por:
+                        <select id="comp-orden">
+                            <option value="prioridad" selected>Prioridad (qué atacar primero)</option>
+                            <option value="dif">Nos ganan por más %</option>
+                            <option value="ventas">Más vendidos (90 días)</option>
+                            <option value="stock">Más stock</option>
+                            <option value="margen">Menor ganancia actual</option>
+                            <option value="sku">SKU</option>
                         </select>
                     </label>
                     <label class="comp-check">

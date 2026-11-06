@@ -724,3 +724,30 @@ tbody tr:hover {
 /* Instrucciones de Competencia: texto corrido (con flex, cada <strong> quedaba separado del resto) */
 #tab-competencia .steps-list li { display: block; position: relative; padding-left: 2.25rem; }
 #tab-competencia .steps-list li .step-num { position: absolute; left: 0; top: 0.1rem; margin-top: 0; }
+
+/* Competencia ML: aviso de archivos viejos y panel de cambios diarios */
+.comp-aviso {
+    display: flex; align-items: center; gap: 0.6rem; margin-bottom: 1rem; padding: 0.75rem 1rem;
+    border-radius: 10px; font-size: 0.9rem; color: var(--warning);
+    background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.35);
+}
+.comp-aviso[hidden] { display: none; }
+.comp-aviso b { color: var(--text-primary); }
+.comp-aviso span { flex: 1; }
+.comp-cambios {
+    margin-bottom: 1.25rem; border: 1px solid var(--border-color); border-radius: 12px;
+    background: rgba(255,255,255,0.03);
+}
+.comp-cambios summary { cursor: pointer; padding: 0.85rem 1.1rem; font-size: 0.9rem; color: var(--text-secondary); }
+.comp-cambios summary i { color: var(--info); margin-right: 0.3rem; }
+.comp-cambios[open] summary { border-bottom: 1px solid var(--border-color); }
+.comp-cambios-body { padding: 0.75rem 1.1rem 1rem; max-height: 420px; overflow: auto; }
+.comp-cambios-tabla { min-width: 0; font-size: 0.82rem; }
+.comp-cambios-tabla th, .comp-cambios-tabla td { padding: 0.45rem 0.6rem; }
+.comp-cambios-tabla th { font-size: 0.72rem; }
+.comp-cambios-tabla a { color: var(--info); text-decoration: none; }
+.cb-baja, tr.cb-bajo td:first-child { color: var(--danger); font-weight: 600; }
+.cb-sube, tr.cb-subio td:first-child { color: var(--success); font-weight: 600; }
+.comp-baja { color: var(--danger); font-size: 0.7rem; flex-shrink: 0; }
+.comp-sube { color: var(--success); font-size: 0.7rem; flex-shrink: 0; }
+#comp-orden, #comp-vista { padding: 0.5rem; border-radius: 8px; }

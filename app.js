@@ -3131,6 +3131,7 @@ btnDownloadRestock.addEventListener('click', () => {
     const tbody = $('results-body-comp');
     const inBuscar = $('comp-buscar');
     const selVista = $('comp-vista');
+    const selOrden = $('comp-orden');
     const chkSoloStock = $('comp-solo-stock');
 
     let pubs = null;    // [{sku, baseSku, kitN, mla, title, precio, precioLista, stock, full}]
@@ -3276,6 +3277,8 @@ btnDownloadRestock.addEventListener('click', () => {
                 const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' });
                 if (type === 'pub') pubs = parsePublicaciones(rows);
                 else costos = parseStockTodo(rows);
+                guardarDatos(type, file.name);
+                status.textContent = `${file.name} · cargado ahora`;
                 btnProcess.disabled = !(pubs && costos);
                 if (items.length) { construir(); render(); }
             } catch (err) {
@@ -3291,6 +3294,52 @@ btnDownloadRestock.addEventListener('click', () => {
     }
     setupDrop(dropPub, filePub, statusPub, 'pub');
     setupDrop(dropStock, fileStock, statusStock, 'stock');
+
+    // La página recuerda los últimos archivos subidos (ya procesados), así no hay que
+    // volver a subirlos cada vez. Se reemplazan al subir uno nuevo.
+    const DATA_KEY = 'competenciaML.datos.v1';
+    let datosGuardados = {};   // { pub: {nombre, fecha}, stock: {nombre, fecha} }
+    const fmtFechaHora = (iso) => {
+        if (!iso) return '';
+        const d = new Date(iso);
+        return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit' }) + ' ' +
+            d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+    };
+    const diasDesde = (iso) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null;
+    function guardarDatos(type, nombre) {
+        const meta = { nombre, fecha: new Date().toISOString() };
+        datosGuardados[type] = meta;
+        try {
+            const d = JSON.parse(localStorage.getItem(DATA_KEY) || '{}');
+            d[type] = { ...meta, datos: type === 'pub' ? pubs : costos };
+            localStorage.setItem(DATA_KEY, JSON.stringify(d));
+        } catch (e) { console.warn('No se pudieron guardar los archivos en el navegador', e); }
+    }
+    function restaurarDatos() {
+        try {
+            const d = JSON.parse(localStorage.getItem(DATA_KEY) || '{}');
+            [['pub', statusPub], ['stock', statusStock]].forEach(([type, status]) => {
+                if (!d[type] || !d[type].datos) return;
+                if (type === 'pub') pubs = d[type].datos; else costos = d[type].datos;
+                datosGuardados[type] = { nombre: d[type].nombre, fecha: d[type].fecha };
+                status.textContent = `${d[type].nombre} · cargado el ${fmtFechaHora(d[type].fecha)}`;
+                status.classList.add('uploaded');
+            });
+        } catch (e) { console.warn('No se pudieron leer los archivos guardados', e); }
+        btnProcess.disabled = !(pubs && costos);
+    }
+    // Aviso si los archivos guardados ya tienen varios días
+    function pintarAvisoDatos() {
+        const el = $('comp-aviso-datos');
+        const viejos = [['stock', 'el <b>Stock del Sistema</b> (costos)'], ['pub', 'las <b>Publicaciones</b> (nuestros precios)']]
+            .map(([t, txt]) => ({ t, txt, d: diasDesde(datosGuardados[t] && datosGuardados[t].fecha) }))
+            .filter(x => x.d != null && x.d >= 2);
+        el.hidden = !viejos.length;
+        el.innerHTML = viejos.length
+            ? '<i class="fa-solid fa-clock-rotate-left"></i><span>' + viejos.map(x => `${x.txt} es de hace ${x.d} días`).join(' y ') +
+              '. Subí el archivo actualizado arriba para que los cálculos estén al día.</span>'
+            : '';
+    }
     // ---------- Comisión y envío de referencia ----------
     // Medida "195/55R16" a partir de un título o descripción (acepta 195/55r16, 205 65 R16, 205/45zr17...)
     function medidaDe(txt) {
@@ -3340,7 +3389,8 @@ btnDownloadRestock.addEventListener('click', () => {
                 nPubs: ps.length,
                 mlas: ps.map(p => p.mla),
                 stock: Math.max(...ps.map(p => p.stock)) + Math.max(...ps.map(p => p.full)),
-                costoBase: info ? info.costo : null
+                costoBase: info ? info.costo : null,
+                ventas: (CML.ventasPorSku || {})[sku] || 0
             };
         });
     }
@@ -3380,6 +3430,22 @@ btnDownloadRestock.addEventListener('click', () => {
     // ---------- render ----------
     const ORDEN = { bajar: 0, no: 1, sincosto: 2, sinprecio: 3, ganamos: 4, sin: 5 };
 
+    // Cuánto más caros estamos que el competidor más barato (0 si ya somos los más baratos)
+    const difPct = ({ it, ev }) => ev.rival && it.precio > ev.rival.precio ? (it.precio - ev.rival.precio) / ev.rival.precio : 0;
+    // Impacto: lo que se vende × cuánto nos ganan (sin ventas cuenta como 1 para no quedar en cero)
+    const impacto = (f) => (f.it.ventas + 1) * (difPct(f) || 0.0001) + f.it.stock / 1e6;
+    function comparador(orden) {
+        const nz = (v) => (v == null ? Infinity : v);
+        switch (orden) {
+            case 'dif': return (a, b) => difPct(b) - difPct(a) || b.it.ventas - a.it.ventas;
+            case 'ventas': return (a, b) => b.it.ventas - a.it.ventas || b.it.stock - a.it.stock;
+            case 'stock': return (a, b) => b.it.stock - a.it.stock;
+            case 'margen': return (a, b) => nz(a.ev.margenPct) - nz(b.ev.margenPct);
+            case 'sku': return (a, b) => a.it.sku.localeCompare(b.it.sku, 'es', { numeric: true });
+            default: return (a, b) => (ORDEN[a.ev.estado] - ORDEN[b.ev.estado]) || (impacto(b) - impacto(a));
+        }
+    }
+
     function filasVisibles() {
         const q = inBuscar.value.trim().toLowerCase();
         const vista = selVista.value;
@@ -3399,7 +3465,7 @@ btnDownloadRestock.addEventListener('click', () => {
                     default: return true;
                 }
             })
-            .sort((a, b) => (ORDEN[a.ev.estado] - ORDEN[b.ev.estado]) || (b.it.stock - a.it.stock));
+            .sort(comparador(selOrden.value));
     }
 
     function sugerenciaHtml(it, ev) {
@@ -3435,6 +3501,11 @@ btnDownloadRestock.addEventListener('click', () => {
                 ${c.auto ? '<i class="fa-solid fa-robot comp-auto"></i>' : '<i class="fa-solid fa-user-pen comp-manual"></i>'}
                 <a class="comp-name" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(nombre)}</a>
                 ${c.full ? '<span class="comp-mini" title="Envío Full">FULL</span>' : ''}
+                ${c.precioAnterior > 0 && c.precio > 0 && c.precioAnterior !== c.precio
+                    ? (c.precio < c.precioAnterior
+                        ? `<i class="fa-solid fa-arrow-down comp-baja" title="Bajó: antes ${fmt$(c.precioAnterior)}"></i>`
+                        : `<i class="fa-solid fa-arrow-up comp-sube" title="Subió: antes ${fmt$(c.precioAnterior)}"></i>`)
+                    : ''}
                 <button class="comp-price" data-act="edit" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Editar precio / datos">${c.precio > 0 ? fmt$(c.precio) : 'sin precio'}</button>
                 <button class="comp-del" data-act="del" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Quitar competidor"><i class="fa-solid fa-xmark"></i></button>
             </div>`;
@@ -3446,6 +3517,7 @@ btnDownloadRestock.addEventListener('click', () => {
     }
 
     function render() {
+        pintarAvisoDatos();
         const filas = filasVisibles();
         tbody.innerHTML = filas.map(({ it, ev }) => {
             const mColor = ev.margen == null ? '' : ev.margen < 0 ? 'text-danger' : 'text-success';
@@ -3456,7 +3528,7 @@ btnDownloadRestock.addEventListener('click', () => {
             return `<tr class="comp-row comp-${ev.estado} ${color}">
                 <td style="font-weight:700; white-space:nowrap;">${esc(it.sku)}</td>
                 <td class="comp-prod">${esc(it.desc)}<div class="comp-sub">${it.nPubs} ${it.nPubs === 1 ? 'publicación' : 'publicaciones'}</div></td>
-                <td style="text-align:center;">${it.stock}</td>
+                <td style="text-align:center;">${it.stock}<div class="comp-sub" title="Neumáticos vendidos en Mercado Libre en los últimos ${CML.dias || 90} días">${it.ventas} vend.</div></td>
                 <td style="text-align:right;">${fmt$(ev.costo)}</td>
                 <td style="text-align:right; white-space:nowrap;">
                     <strong>${fmt$(it.precio)}</strong>${it.enPromo ? ' <span class="comp-tag">promo</span>' : ''}${it.esKit ? ' <span class="comp-tag">kit c/u</span>' : ''}
@@ -3576,7 +3648,9 @@ btnDownloadRestock.addEventListener('click', () => {
             mlEstado.innerHTML = 'La búsqueda automática funciona en la página publicada (<b>analizador-stock-ml.vercel.app</b>), no en una copia local.';
             btnMlConectar.hidden = true;
         } else if (mlConectado) {
-            mlEstado.innerHTML = `Conectado a Mercado Libre${st.nickname ? ` como <b>${esc(st.nickname)}</b>` : ''} · <a href="#" id="comp-ml-salir">desconectar</a>`;
+            mlEstado.innerHTML = `Conectado a Mercado Libre${st.nickname ? ` como <b>${esc(st.nickname)}</b>` : ''}` +
+                (typeof ultima !== 'undefined' && ultima && ultima.fecha ? ` · precios actualizados el <b>${fmtFechaHora(ultima.fecha)}</b> (se actualizan solos una vez por día)` : '') +
+                ` · <a href="#" id="comp-ml-salir">desconectar</a>`;
         } else if (st.configurado === false) {
             mlEstado.innerHTML = `Falta configurar la app de Mercado Libre en Vercel (ML_CLIENT_ID y ML_CLIENT_SECRET). URL de retorno: <code>${esc(st.redirectUri || '')}</code>`;
             btnMlConectar.hidden = true;
@@ -3618,9 +3692,16 @@ btnDownloadRestock.addEventListener('click', () => {
     });
 
     const TAMANO_LOTE = 10;
+    // Última actualización de precios y lo que cambió en ella
+    const ULTIMA_KEY = 'competenciaML.ultima.v1';
+    let ultima = (() => { try { return JSON.parse(localStorage.getItem(ULTIMA_KEY)) || null; } catch (e) { return null; } })();
+    const HORAS_ACTUALIZACION = 20;   // "una vez por día"
+    const tocaActualizar = () => !ultima || !ultima.fecha || (Date.now() - new Date(ultima.fecha).getTime()) > HORAS_ACTUALIZACION * 3600000;
+
     btnMlBuscar.addEventListener('click', () => buscarCompetidoresMl());
-    async function buscarCompetidoresMl() {
+    async function buscarCompetidoresMl(opciones = {}) {
         if (!items.length || mlBuscando || !mlConectado) return;
+        const automatica = !!opciones.automatica;
         const lista = items.filter(it => !chkSoloStock.checked || it.stock > 0);
         const lotes = [];
         for (let i = 0; i < lista.length; i += TAMANO_LOTE) lotes.push(lista.slice(i, i + TAMANO_LOTE));
@@ -3628,11 +3709,11 @@ btnDownloadRestock.addEventListener('click', () => {
         mlBuscando = true;
         btnMlBuscar.disabled = true;
         mlProg.hidden = false;
-        const resumen = { conComp: 0, nuevos: 0, sinCatalogo: [], sinComp: 0, actualizados: 0, errores: 0 };
+        const resumen = { conComp: 0, nuevos: 0, sinCatalogo: [], sinComp: 0, actualizados: 0, errores: 0, cambios: [], hayAnterior: !!(ultima && ultima.fecha) };
         let hechos = 0;
         let abortado = null;
         for (const lote of lotes) {
-            mlProgTxt.textContent = `Buscando en Mercado Libre... ${hechos} de ${lista.length} SKU`;
+            mlProgTxt.textContent = `${automatica ? 'Actualización diaria: ' : ''}Buscando en Mercado Libre... ${hechos} de ${lista.length} SKU`;
             mlProgFill.style.width = `${Math.round(hechos / lista.length * 100)}%`;
             // competidores cargados a mano en este lote: se les actualiza el precio
             const seguir = lote.flatMap(it => compsOf(it.sku).filter(c => !c.auto && c.mla).map(c => c.mla));
@@ -3661,6 +3742,22 @@ btnDownloadRestock.addEventListener('click', () => {
         mlProg.hidden = true;
         consultarEstadoMl();
         if (abortado) { Swal.fire('Búsqueda interrumpida', abortado, 'warning'); return; }
+        if (resumen.errores < lista.length) {
+            ultima = { fecha: new Date().toISOString(), cambios: resumen.cambios, anterior: ultima ? ultima.fecha : null };
+            try { localStorage.setItem(ULTIMA_KEY, JSON.stringify(ultima)); } catch (e) { /* sin almacenamiento */ }
+            pintarCambios();
+            consultarEstadoMl();
+        }
+        if (automatica) {
+            const c = resumen.cambios;
+            const n = (t) => c.filter(x => x.tipo === t).length;
+            Swal.fire({
+                toast: true, position: 'top-end', timer: 7000, showConfirmButton: false, icon: 'success',
+                title: 'Precios de la competencia actualizados',
+                text: resumen.hayAnterior ? `${n('bajo')} bajaron · ${n('subio')} subieron · ${n('nuevo')} nuevos · ${n('salio')} dejaron de vender` : ''
+            });
+            return;
+        }
         Swal.fire({
             title: 'Búsqueda terminada',
             html: `Se encontraron competidores para <b>${resumen.conComp}</b> SKU (${resumen.nuevos} publicaciones nuevas).` +
@@ -3680,10 +3777,18 @@ btnDownloadRestock.addEventListener('click', () => {
             if (!r) return;
             const manuales = (store[it.sku] || []).filter(c => !c.auto);
             // Actualiza precio de los cargados a mano
+            const anotar = (tipo, c, antes, ahora) => resumen.cambios.push({
+                tipo, sku: it.sku, desc: it.desc, vendedor: c.vendedor || '', mla: c.mla, url: c.url,
+                antes: antes || null, ahora: ahora || null, nuestro: it.precio
+            });
             manuales.forEach(c => {
                 const s = c.mla && seg[c.mla];
+                delete c.precioAnterior;
                 if (s && s.precio > 0) {
-                    if (s.precio !== c.precio) c.fecha = hoy();
+                    if (s.precio !== c.precio) {
+                        c.fecha = hoy();
+                        if (c.precio > 0) { c.precioAnterior = c.precio; anotar(s.precio < c.precio ? 'bajo' : 'subio', c, c.precio, s.precio); }
+                    }
                     c.precio = s.precio;
                     if (!c.vendedor && s.vendedor) c.vendedor = s.vendedor;
                     resumen.actualizados++;
@@ -3698,7 +3803,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 .map(c => {
                     const prev = previos.get(c.mla);
                     if (!prev) resumen.nuevos++;
-                    return {
+                    const comp = {
                         id: prev ? prev.id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
                         mla: c.mla,
                         url: 'https://articulo.mercadolibre.com.ar/MLA-' + c.mla.replace(/^MLA/, ''),
@@ -3708,13 +3813,55 @@ btnDownloadRestock.addEventListener('click', () => {
                         auto: true,
                         fecha: prev && prev.precio === c.precio ? prev.fecha : hoy()
                     };
+                    // Solo se registran cambios si ya había una búsqueda anterior para comparar
+                    if (resumen.hayAnterior) {
+                        if (prev && prev.precio > 0 && prev.precio !== c.precio) {
+                            comp.precioAnterior = prev.precio;
+                            anotar(c.precio < prev.precio ? 'bajo' : 'subio', comp, prev.precio, c.precio);
+                        } else if (!prev && previos.size) anotar('nuevo', comp, null, c.precio);
+                    }
+                    return comp;
                 });
+            if (resumen.hayAnterior) {
+                const ahora = new Set(nuevos.map(c => c.mla));
+                previos.forEach((c, mla) => { if (!ahora.has(mla) && !estaIgnorado(it.sku, mla)) anotar('salio', c, c.precio, null); });
+            }
             const todos = manuales.concat(nuevos);
             if (todos.length) store[it.sku] = todos; else delete store[it.sku];
             if (nuevos.length) resumen.conComp++;
             else if (r.motivo === 'sin_catalogo' || r.motivo === 'no_encontrada') resumen.sinCatalogo.push(it.sku);
             else resumen.sinComp++;
         });
+    }
+
+    // Panel "Cambios en la última actualización"
+    function pintarCambios() {
+        const box = $('comp-cambios');
+        if (!ultima || !ultima.fecha || !ultima.anterior) { box.hidden = true; return; }
+        const c = ultima.cambios || [];
+        const n = (t) => c.filter(x => x.tipo === t).length;
+        box.hidden = false;
+        $('comp-cambios-resumen').innerHTML =
+            `<i class="fa-solid fa-chart-line"></i> Cambios de la competencia entre el ${fmtFechaHora(ultima.anterior)} y el ${fmtFechaHora(ultima.fecha)}: ` +
+            `<span class="cb-baja">↓ ${n('bajo')} bajaron</span> · <span class="cb-sube">↑ ${n('subio')} subieron</span> · ` +
+            `<span>＋ ${n('nuevo')} nuevos</span> · <span>− ${n('salio')} dejaron de vender</span>`;
+        if (!c.length) { $('comp-cambios-body').innerHTML = '<p class="comp-muted">No hubo cambios de precio.</p>'; return; }
+        const ordenTipo = { bajo: 0, nuevo: 1, subio: 2, salio: 3 };
+        const variacion = (x) => x.antes && x.ahora ? (x.ahora - x.antes) / x.antes : 0;
+        const filas = c.slice().sort((a, b) => ordenTipo[a.tipo] - ordenTipo[b.tipo] || variacion(a) - variacion(b)).slice(0, 150);
+        const TIPO = { bajo: '↓ Bajó', subio: '↑ Subió', nuevo: '＋ Nuevo', salio: '− Dejó de vender' };
+        $('comp-cambios-body').innerHTML = `<table class="comp-cambios-tabla"><thead><tr>
+                <th>Cambio</th><th>SKU</th><th>Producto</th><th>Vendedor</th><th style="text-align:right;">Antes</th>
+                <th style="text-align:right;">Ahora</th><th style="text-align:right;">Variación</th><th>¿Nos gana?</th></tr></thead><tbody>` +
+            filas.map(x => {
+                const nosGana = x.ahora && x.nuestro > x.ahora;
+                return `<tr class="cb-${x.tipo}">
+                    <td>${TIPO[x.tipo]}</td><td>${esc(x.sku)}</td><td>${esc(x.desc)}</td>
+                    <td><a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.vendedor || x.mla)}</a></td>
+                    <td style="text-align:right;">${fmt$(x.antes)}</td><td style="text-align:right;">${fmt$(x.ahora)}</td>
+                    <td style="text-align:right;">${x.antes && x.ahora ? fmtPct(variacion(x)) : '—'}</td>
+                    <td>${x.ahora ? (nosGana ? '<b class="text-danger">Sí</b>' : 'No') : '—'}</td></tr>`;
+            }).join('') + '</tbody></table>' + (c.length > filas.length ? `<p class="comp-muted">Se muestran ${filas.length} de ${c.length} cambios.</p>` : '');
     }
 
     // ---------- botones ----------
@@ -3740,7 +3887,7 @@ btnDownloadRestock.addEventListener('click', () => {
         });
     });
 
-    [inBuscar, selVista, chkSoloStock].forEach(el => {
+    [inBuscar, selVista, chkSoloStock, selOrden].forEach(el => {
         const ev = (el.type === 'text' || el.type === 'number') ? 'input' : 'change';
         el.addEventListener(ev, () => { if (items.length) render(); });
     });
@@ -3807,52 +3954,165 @@ btnDownloadRestock.addEventListener('click', () => {
         reader.readAsArrayBuffer(file);
     });
 
-    // Descargar el análisis completo
+    // Descargar el análisis completo: Excel con 3 hojas (Resumen, Por SKU, Competidores)
     $('btn-download-comp').addEventListener('click', () => {
         const filas = filasVisibles();
         if (!filas.length) { Swal.fire({ title: 'Sin datos', text: 'No hay filas para exportar.', icon: 'warning', confirmButtonColor: '#3b82f6' }); return; }
-        const ESTADO = { bajar: 'Podemos bajar', no: 'No conviene bajar', ganamos: 'Ya somos más baratos', sincosto: 'Sin costo', sinprecio: 'Falta precio del competidor', sin: 'Sin competidores' };
-        const data = filas.map(({ it, ev }) => ({
-            'SKU': it.sku,
-            'Producto': it.desc,
-            'Stock': it.stock,
-            'Costo c/IVA': ev.costo != null ? Math.round(ev.costo) : '',
-            'Nuestro precio': Math.round(it.precio),
-            'Nuestro MLA': it.mla,
-            'Comisión %': +(ev.com * 100).toFixed(1),
-            'Origen comisión': it.comFuente,
-            'Envío $/u': Math.round(ev.envio),
-            'Origen envío': it.envioFuente,
-            'Recibimos': Math.round(ev.recibimos),
-            'Margen $': ev.margen != null ? Math.round(ev.margen) : '',
-            'Margen %': ev.margenPct != null ? +(ev.margenPct * 100).toFixed(1) : '',
-            'Competidor más barato': ev.rival ? (ev.rival.mla || ev.rival.url) : '',
-            'Vendedor': ev.rival ? (ev.rival.vendedor || '') : '',
-            'Precio competidor': ev.rival ? ev.rival.precio : '',
-            'Precio mínimo sin perder': ev.piso != null ? Math.round(ev.piso) : '',
-            'Precio sugerido': ev.estado === 'bajar' ? Math.round(ev.objetivo) : '',
-            'Neto con precio sugerido': ev.estado === 'bajar' ? Math.round(ev.recibObjetivo) : '',
-            'Ganancia sobre costo con precio sugerido': ev.estado === 'bajar' ? Math.round(ev.margenObjetivo) : '',
-            'Estado': ESTADO[ev.estado] || '',
-            'Todos los competidores': ev.comps.map(c => `${c.mla || c.url} ${c.precio ? fmt$(c.precio) : ''}`.trim()).join(' | ')
-        }));
         const XLib = window.XLSXStyle || XLSX;
-        const ws = XLib.utils.json_to_sheet(data);
-        ws['!cols'] = [14, 40, 7, 13, 14, 16, 11, 40, 11, 40, 13, 12, 9, 18, 18, 15, 16, 14, 16, 18, 24, 60].map(w => ({ wch: w }));
-        if (window.XLSXStyle) {
-            const color = { bajar: 'C6EFCE', no: 'FFC7CE', ganamos: 'FFEB9C' };
-            const nCols = Object.keys(data[0]).length;
-            filas.forEach(({ ev }, i) => {
-                const rgb = (ev.margen != null && ev.margen < 0) ? color.no : color[ev.estado];
-                if (!rgb) return;
-                for (let c = 0; c < nCols; c++) {
-                    const a = XLib.utils.encode_cell({ r: i + 1, c });
-                    if (ws[a]) ws[a].s = { fill: { fgColor: { rgb } } };
+        const conEstilo = !!window.XLSXStyle;
+        const ESTADO = { bajar: 'Podemos bajar', no: 'No conviene bajar', ganamos: 'Ya somos más baratos', sincosto: 'Sin costo', sinprecio: 'Falta precio del competidor', sin: 'Sin competidores' };
+        const COLOR = { bajar: 'C6EFCE', no: 'FFC7CE', ganamos: 'FFF2CC' };
+        const MONEDA = '"$" #,##0;[Red]-"$" #,##0';
+        const PCT = '0.0%;[Red]-0.0%';
+        const urlMla = (mla) => 'https://articulo.mercadolibre.com.ar/MLA-' + String(mla).replace(/^MLA/i, '');
+        const r0 = (n) => (n == null || isNaN(n)) ? null : Math.round(n);
+        const colorFila = (ev) => (ev.margen != null && ev.margen < 0) ? COLOR.no : COLOR[ev.estado];
+
+        // Arma una hoja a partir de columnas {titulo, ancho, fmt?, link?} y filas de valores
+        function hoja(columnas, filasDatos, colores) {
+            const aoa = [columnas.map(c => c.titulo), ...filasDatos.map(f => f.map(v => (v && typeof v === 'object') ? v.v : v))];
+            const ws = XLib.utils.aoa_to_sheet(aoa);
+            ws['!cols'] = columnas.map(c => ({ wch: c.ancho }));
+            ws['!autofilter'] = { ref: XLib.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: filasDatos.length, c: columnas.length - 1 } }) };
+            filasDatos.forEach((f, i) => f.forEach((v, c) => {
+                const cell = ws[XLib.utils.encode_cell({ r: i + 1, c })];
+                if (!cell) return;
+                if (columnas[c].fmt && typeof cell.v === 'number') cell.z = columnas[c].fmt;
+                if (v && typeof v === 'object' && v.link) cell.l = { Target: v.link, Tooltip: 'Abrir en Mercado Libre' };
+                if (conEstilo) {
+                    const s = { border: { bottom: { style: 'thin', color: { rgb: 'D9D9D9' } } }, alignment: { vertical: 'center' } };
+                    if (colores && colores[i]) s.fill = { fgColor: { rgb: colores[i] } };
+                    if (columnas[c].fmt) s.numFmt = columnas[c].fmt;
+                    if (v && typeof v === 'object' && v.link) s.font = { color: { rgb: '0563C1' }, underline: true };
+                    if (v && typeof v === 'object' && v.bold) s.font = Object.assign(s.font || {}, { bold: true });
+                    cell.s = s;
                 }
+            }));
+            if (conEstilo) columnas.forEach((c, i) => {
+                const cell = ws[XLib.utils.encode_cell({ r: 0, c: i })];
+                if (cell) cell.s = {
+                    font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '1F3864' } },
+                    alignment: { vertical: 'center', horizontal: 'center', wrapText: true },
+                    border: { bottom: { style: 'medium', color: { rgb: '000000' } } }
+                };
             });
+            ws['!rows'] = [{ hpt: 32 }];
+            return ws;
         }
+
+        // ---- Hoja "Por SKU" ----
+        const colSku = [
+            { titulo: 'Estado', ancho: 20 }, { titulo: 'SKU', ancho: 16 }, { titulo: 'Producto', ancho: 42 },
+            { titulo: 'Stock', ancho: 7 }, { titulo: 'Vendidos 90 días', ancho: 9 }, { titulo: 'Costo c/IVA', ancho: 13, fmt: MONEDA },
+            { titulo: 'Nuestro precio', ancho: 14, fmt: MONEDA }, { titulo: 'Nuestra publicación', ancho: 17 },
+            { titulo: 'Comisión ML', ancho: 11, fmt: PCT }, { titulo: 'Envío por unidad', ancho: 13, fmt: MONEDA },
+            { titulo: 'Recibimos (neto)', ancho: 14, fmt: MONEDA }, { titulo: 'Ganancia actual', ancho: 14, fmt: MONEDA },
+            { titulo: 'Ganancia actual %', ancho: 11, fmt: PCT },
+            { titulo: 'Competidores', ancho: 8 }, { titulo: 'Nuestra posición', ancho: 11 },
+            { titulo: 'Competidor más barato', ancho: 24 }, { titulo: 'Su precio', ancho: 13, fmt: MONEDA },
+            { titulo: 'Diferencia vs. él', ancho: 13, fmt: MONEDA }, { titulo: 'Diferencia %', ancho: 10, fmt: PCT },
+            { titulo: 'Precio sugerido', ancho: 14, fmt: MONEDA }, { titulo: 'Neto con precio sugerido', ancho: 14, fmt: MONEDA },
+            { titulo: 'Ganancia con precio sugerido', ancho: 14, fmt: MONEDA },
+            { titulo: 'Mínimo sin perder', ancho: 14, fmt: MONEDA },
+            { titulo: 'Origen comisión', ancho: 34 }, { titulo: 'Origen envío', ancho: 34 }
+        ];
+        const datosSku = filas.map(({ it, ev }) => {
+            const conPrecio = ev.comps.filter(c => c.precio > 0);
+            const posicion = conPrecio.length ? `${conPrecio.filter(c => c.precio < it.precio).length + 1} de ${conPrecio.length + 1}` : '';
+            const baja = ev.estado === 'bajar';
+            return [
+                { v: ESTADO[ev.estado] || '', bold: true }, it.sku, it.desc, it.stock, it.ventas, r0(ev.costo),
+                r0(it.precio), { v: it.mla, link: urlMla(it.mla) },
+                ev.com, r0(ev.envio), r0(ev.recibimos), r0(ev.margen), ev.margenPct,
+                ev.comps.length, posicion,
+                ev.rival ? { v: ev.rival.vendedor || ev.rival.mla || 'Ver publicación', link: ev.rival.url } : '',
+                ev.rival ? r0(ev.rival.precio) : null,
+                ev.rival ? r0(it.precio - ev.rival.precio) : null,
+                ev.rival ? (it.precio - ev.rival.precio) / ev.rival.precio : null,
+                baja ? r0(ev.objetivo) : null, baja ? r0(ev.recibObjetivo) : null, baja ? r0(ev.margenObjetivo) : null,
+                r0(ev.piso), it.comFuente, it.envioFuente
+            ];
+        });
+        const wsSku = hoja(colSku, datosSku, filas.map(({ ev }) => colorFila(ev)));
+
+        // ---- Hoja "Competidores" (un renglón por competidor) ----
+        const colComp = [
+            { titulo: 'SKU', ancho: 16 }, { titulo: 'Producto', ancho: 40 }, { titulo: 'Nuestro precio', ancho: 14, fmt: MONEDA },
+            { titulo: 'Vendedor', ancho: 26 }, { titulo: 'Publicación', ancho: 17 }, { titulo: 'Su precio', ancho: 13, fmt: MONEDA },
+            { titulo: 'Diferencia (nosotros − él)', ancho: 15, fmt: MONEDA }, { titulo: 'Diferencia %', ancho: 11, fmt: PCT },
+            { titulo: '¿Más barato que nosotros?', ancho: 13 }, { titulo: 'Full', ancho: 6 },
+            { titulo: 'Cómo se cargó', ancho: 14 }, { titulo: 'Fecha del precio', ancho: 13 }
+        ];
+        const datosComp = [], coloresComp = [];
+        filas.forEach(({ it, ev }) => {
+            ev.comps.slice().sort((a, b) => (a.precio || Infinity) - (b.precio || Infinity)).forEach(c => {
+                const dif = c.precio > 0 ? it.precio - c.precio : null;
+                datosComp.push([
+                    it.sku, it.desc, r0(it.precio), c.vendedor || '', { v: c.mla || 'Link', link: c.url },
+                    c.precio > 0 ? r0(c.precio) : null, r0(dif), dif != null ? dif / c.precio : null,
+                    dif == null ? '' : dif > 0 ? 'Sí' : 'No', c.full ? 'Sí' : '',
+                    c.auto ? 'Automático' : 'Manual', c.fecha || ''
+                ]);
+                coloresComp.push(dif != null && dif > 0 ? 'FCE4D6' : null);
+            });
+        });
+        const wsComp = hoja(colComp, datosComp, coloresComp);
+
+        // ---- Hoja "Resumen" ----
+        const cuenta = (e) => filas.filter(f => f.ev.estado === e).length;
+        const bajar = filas.filter(f => f.ev.estado === 'bajar');
+        const resumen = [
+            ['Competencia en Mercado Libre'],
+            [`Generado el ${new Date().toLocaleString('es-AR')}`],
+            [`Filtro aplicado: ${selVista.options[selVista.selectedIndex].text}${chkSoloStock.checked ? ' · solo con stock' : ''}${inBuscar.value.trim() ? ` · búsqueda "${inBuscar.value.trim()}"` : ''}`],
+            [],
+            ['Indicador', 'Cantidad'],
+            ['SKU analizados', filas.length],
+            ['SKU con competidores', filas.filter(f => f.ev.comps.length).length],
+            ['Competidores en total', datosComp.length],
+            ['Nos ganan y PODEMOS bajar', bajar.length],
+            ['Nos ganan y NO conviene bajar', cuenta('no')],
+            ['Ya somos los más baratos', cuenta('ganamos')],
+            ['Hoy vendemos debajo del costo', filas.filter(f => f.ev.margen != null && f.ev.margen < 0).length],
+            ['Sin competidores cargados', cuenta('sin')],
+            [],
+            ['Cómo se calcula'],
+            ['Recibimos = precio × (1 − comisión ML) − envío por unidad. Comisión y envío reales de nuestras ventas; si no hubo ventas, aproximados por medida/rodado.'],
+            ['"Podemos bajar": poniéndonos $1.000 debajo del competidor más barato, lo que recibimos sigue siendo mayor que el costo c/IVA.'],
+            ['Colores: verde = podemos bajar · rojo = no conviene / debajo del costo · amarillo = ya somos los más baratos.']
+        ];
+        const wsRes = XLib.utils.aoa_to_sheet(resumen);
+        wsRes['!cols'] = [{ wch: 36 }, { wch: 12 }];
+        wsRes['!merges'] = [0, 1, 2, 14, 15, 16, 17].map(r => ({ s: { r, c: 0 }, e: { r, c: 5 } }));
+        if (conEstilo) {
+            const set = (r, c, s) => { const a = XLib.utils.encode_cell({ r, c }); if (wsRes[a]) wsRes[a].s = s; };
+            set(0, 0, { font: { bold: true, sz: 16, color: { rgb: '1F3864' } } });
+            set(1, 0, { font: { italic: true, color: { rgb: '595959' } } });
+            set(2, 0, { font: { italic: true, color: { rgb: '595959' } } });
+            [0, 1].forEach(c => set(4, c, { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '1F3864' } } }));
+            set(8, 0, { font: { bold: true }, fill: { fgColor: { rgb: COLOR.bajar } } }); set(8, 1, { font: { bold: true }, fill: { fgColor: { rgb: COLOR.bajar } } });
+            set(9, 0, { fill: { fgColor: { rgb: COLOR.no } } }); set(9, 1, { fill: { fgColor: { rgb: COLOR.no } } });
+            set(10, 0, { fill: { fgColor: { rgb: COLOR.ganamos } } }); set(10, 1, { fill: { fgColor: { rgb: COLOR.ganamos } } });
+            set(14, 0, { font: { bold: true, color: { rgb: '1F3864' } } });
+        }
+
         const wb = XLib.utils.book_new();
-        XLib.utils.book_append_sheet(wb, ws, 'Competencia');
+        XLib.utils.book_append_sheet(wb, wsRes, 'Resumen');
+        XLib.utils.book_append_sheet(wb, wsSku, 'Por SKU');
+        XLib.utils.book_append_sheet(wb, wsComp, 'Competidores');
         XLib.writeFile(wb, `Competencia_ML_${hoy()}.xlsx`);
+    });
+    // ---------- arranque ----------
+    // Con archivos guardados se arma la tabla sola; si ML está conectado y pasó un día
+    // desde la última actualización, los precios de la competencia se actualizan solos.
+    restaurarDatos();
+    if (pubs && costos) {
+        construir();
+        render();
+        resultsPanel.classList.remove('hidden');
+    }
+    pintarCambios();
+    consultarEstadoMl().then(() => {
+        if (mlConectado && items.length && tocaActualizar()) buscarCompetidoresMl({ automatica: true });
     });
 })();

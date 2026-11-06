@@ -3420,7 +3420,7 @@ btnDownloadRestock.addEventListener('click', () => {
     }
 
     const expandidos = new Set();   // SKU con la lista de competidores desplegada
-    const MAX_CHIPS = 4;
+    const MAX_CHIPS = 3;
     function compsHtml(it, ev) {
         const orden = ev.comps.slice().sort((a, b) => (a.precio > 0 ? a.precio : Infinity) - (b.precio > 0 ? b.precio : Infinity));
         const abierto = expandidos.has(it.sku);
@@ -3428,14 +3428,14 @@ btnDownloadRestock.addEventListener('click', () => {
         const ocultos = orden.length - visibles.length;
         const chips = visibles.map(c => {
             const best = ev.rival && c.id === ev.rival.id;
-            const label = c.mla || 'Link';
-            const marcas = (c.auto ? `<i class="fa-solid fa-robot comp-auto" title="Encontrado automáticamente en el catálogo de ML"></i>` : '') +
-                (c.full ? `<span class="comp-mini" title="Envío Full">FULL</span>` : '');
-            return `<div class="comp-chip${best ? ' best' : ''}" title="${esc(c.url)}">
-                ${marcas}<a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(label)} <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
-                ${c.vendedor ? `<span class="comp-vend">${esc(c.vendedor)}</span>` : ''}
+            // Una sola línea: [🤖] vendedor (link a la publicación) [FULL] · precio · ✕
+            const nombre = c.vendedor || c.mla || 'Publicación';
+            const info = `${c.vendedor ? c.vendedor + ' · ' : ''}${c.mla || c.url}${c.auto ? ' · encontrado automáticamente' : ''}${c.fecha ? ' · precio del ' + fmtFecha(c.fecha) : ''}`;
+            return `<div class="comp-chip${best ? ' best' : ''}" title="${esc(info)}">
+                ${c.auto ? '<i class="fa-solid fa-robot comp-auto"></i>' : '<i class="fa-solid fa-user-pen comp-manual"></i>'}
+                <a class="comp-name" href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(nombre)}</a>
+                ${c.full ? '<span class="comp-mini" title="Envío Full">FULL</span>' : ''}
                 <button class="comp-price" data-act="edit" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Editar precio / datos">${c.precio > 0 ? fmt$(c.precio) : 'sin precio'}</button>
-                ${c.fecha ? `<span class="comp-date" title="Precio actualizado el ${esc(c.fecha)}">${fmtFecha(c.fecha)}</span>` : ''}
                 <button class="comp-del" data-act="del" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Quitar competidor"><i class="fa-solid fa-xmark"></i></button>
             </div>`;
         }).join('');

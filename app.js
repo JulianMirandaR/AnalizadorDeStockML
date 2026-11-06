@@ -3139,12 +3139,15 @@ btnDownloadRestock.addEventListener('click', () => {
 
     let pubs = null;    // [{sku, baseSku, kitN, mla, title, precio, precioLista, stock, full}]
     let costos = null;  // { SKU: {costo, desc} }
+    let ventas = null;  // [{t, mla, sku, medida, rodado, cuotas, comPct, envU}] del reporte Ventas AR
+    const inEnvio = $('comp-envio');
+    const inDias = $('comp-dias');
     let items = [];     // un elemento por SKU (base de la tabla)
 
     // ---------- helpers ----------
     const esc = (s) => String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const fmt$ = (n) => (n == null || isNaN(n)) ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+    const fmt$ = (n) => (n == null || isNaN(n)) ? '—' : (n < -0.5 ? '-$' : '$') + Math.abs(Math.round(n)).toLocaleString('es-AR');
     const fmtPct = (n) => (n == null || isNaN(n)) ? '—' : (n * 100).toFixed(1).replace('.', ',') + '%';
     const toNum = (v) => {
         if (v === null || v === undefined || v === '' || v === '-') return null;
@@ -3275,6 +3278,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 const name = type === 'pub' && wb.SheetNames.includes('Publicaciones') ? 'Publicaciones' : wb.SheetNames[0];
                 const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' });
                 if (type === 'pub') pubs = parsePublicaciones(rows);
+                else if (type === 'ventas') { ventas = parseVentas(rows); aplicarDefaultsVentas(); }
                 else costos = parseStockTodo(rows);
                 btnProcess.disabled = !(pubs && costos);
                 if (items.length) { construir(); render(); }
@@ -3282,7 +3286,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 console.error(err);
                 status.textContent = 'Error al leer';
                 status.classList.remove('uploaded');
-                if (type === 'pub') pubs = null; else costos = null;
+                if (type === 'pub') pubs = null; else if (type === 'ventas') ventas = null; else costos = null;
                 btnProcess.disabled = true;
                 Swal.fire('Error', err.message || 'No se pudo leer el archivo.', 'error');
             }
@@ -3291,6 +3295,114 @@ btnDownloadRestock.addEventListener('click', () => {
     }
     setupDrop(dropPub, filePub, statusPub, 'pub');
     setupDrop(dropStock, fileStock, statusStock, 'stock');
+    setupDrop($('drop-zone-comp-ventas'), $('file-comp-ventas'), $('status-comp-ventas'), 'ventas');
+
+    // ---------- Ventas AR: comisión y envío reales ----------
+    // Medida "195/55R16" a partir de un título o descripción (acepta 195/55r16, 205 65 R16, 205/45zr17...)
+    function medidaDe(txt) {
+        const m = String(txt || '').match(/\b(\d{3})\s*[\/\s]\s*(\d{2})\s*(?:Z?R|-)?\s*(\d{2})(?!\d)/i);
+        return m ? { medida: `${m[1]}/${m[2]}R${m[3]}`, rodado: 'R' + m[3] } : null;
+    }
+    const MESES = { enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5, julio: 6, agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11 };
+    function fechaVenta(v) {
+        if (typeof v === 'number') return (v - 25569) * 86400000;          // serial de Excel
+        const m = String(v || '').toLowerCase().match(/(\d{1,2}) de ([a-záéíóú]+) de (\d{4})/);
+        if (m && MESES[m[2]] != null) return new Date(+m[3], MESES[m[2]], +m[1]).getTime();
+        const d = Date.parse(v);
+        return isNaN(d) ? null : d;
+    }
+    function parseVentas(rows) {
+        const h = findHeader(rows, ['# DE VENTA', 'SKU']);
+        if (h === -1) throw new Error("No parece el reporte de Ventas AR de ML (falta la columna '# de venta').");
+        const up = rows[h].map(c => String(c).trim().toUpperCase());
+        const first = (pred) => up.findIndex(pred);
+        const c = {
+            fecha: first(x => x.startsWith('FECHA DE VENTA')),
+            estado: first(x => x === 'ESTADO'),
+            uni: first(x => x === 'UNIDADES'),
+            ing: first(x => x.startsWith('INGRESOS POR PRODUCTOS')),
+            cargo: first(x => x.startsWith('CARGO POR VENTA')),
+            ingEnv: first(x => x.startsWith('INGRESOS POR ENV')),
+            env: first(x => x.startsWith('COSTOS DE ENV')),
+            sku: first(x => x === 'SKU'),
+            mla: first(x => x.startsWith('# DE PUBLICACI')),
+            titulo: first(x => x.startsWith('TÍTULO DE LA PUBLICACI') || x.startsWith('TITULO DE LA PUBLICACI')),
+            cuotas: first(x => x.startsWith('TIENE CUOTAS'))
+        };
+        if (c.ing === -1 || c.cargo === -1 || c.env === -1) throw new Error('Al reporte de ventas le faltan las columnas de ingresos, cargo por venta o costos de envío.');
+        const out = [];
+        for (let i = h + 1; i < rows.length; i++) {
+            const r = rows[i];
+            if (!r) continue;
+            const estado = String(r[c.estado] || '').toLowerCase();
+            if (/cancel|devoluci|reembols|mediaci/.test(estado)) continue;
+            const uni = toNum(r[c.uni]) || 0;
+            const ing = toNum(r[c.ing]) || 0;
+            if (uni <= 0 || ing <= 0) continue;
+            const sku = normSku(r[c.sku]);
+            const kit = sku.match(/^KITX(\d+)-(.+)$/);
+            const kitN = kit ? parseInt(kit[1], 10) : 1;
+            const titulo = c.titulo !== -1 ? String(r[c.titulo] || '') : '';
+            const md = medidaDe(titulo);
+            const envNeto = -(toNum(r[c.env]) || 0) - (toNum(r[c.ingEnv]) || 0);   // lo que paga el vendedor
+            out.push({
+                t: fechaVenta(r[c.fecha]),
+                mla: String(r[c.mla] || '').trim().toUpperCase(),
+                sku: kit ? kit[2] : sku,
+                medida: md ? md.medida : null,
+                rodado: md ? md.rodado : null,
+                cuotas: c.cuotas !== -1 && /^s/i.test(String(r[c.cuotas] || '').trim()),
+                comPct: -(toNum(r[c.cargo]) || 0) / ing,
+                envU: envNeto > 0 ? envNeto / (uni * kitN) : null       // por neumático
+            });
+        }
+        if (!out.length) throw new Error('El reporte de ventas no tiene ventas válidas.');
+        return out;
+    }
+    const mediana = (arr) => {
+        if (!arr.length) return null;
+        const s = arr.slice().sort((a, b) => a - b), m = s.length >> 1;
+        return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    const desdeDias = () => Date.now() - (parseFloat(inDias.value) || 90) * 86400000;
+    // Mediana de un campo para las ventas que cumplen "pred": primero las recientes; si no hay, todas.
+    function estimar(pred, campo) {
+        const desde = desdeDias();
+        const todas = ventas.filter(v => v[campo] != null && pred(v));
+        if (!todas.length) return null;
+        const recientes = todas.filter(v => v.t != null && v.t >= desde);
+        const usar = recientes.length ? recientes : todas;
+        return { valor: mediana(usar.map(v => v[campo])), n: usar.length, recientes: recientes.length > 0 };
+    }
+    // Al subir el reporte, la comisión y el envío por defecto pasan a ser las medianas reales.
+    function aplicarDefaultsVentas() {
+        const com = estimar(v => !v.cuotas, 'comPct');
+        const env = estimar(v => !!v.rodado, 'envU');
+        if (com) inComision.value = (com.valor * 100).toFixed(1);
+        if (env) inEnvio.value = Math.round(env.valor);
+    }
+    // Comisión de nuestra publicación y envío por neumático del SKU (con su origen)
+    function costosVenta(sku, mla, texto) {
+        const out = { com: null, comFuente: 'por defecto', envio: null, envioFuente: 'por defecto' };
+        if (!ventas) return out;
+        const dias = parseFloat(inDias.value) || 90;
+        const det = (e) => `${e.n} venta${e.n === 1 ? '' : 's'}${e.recientes ? ` de los últimos ${dias} días` : ' (todas, no hay recientes)'}`;
+        const c = estimar(v => v.mla === mla, 'comPct');
+        if (c) { out.com = c.valor; out.comFuente = 'esta publicación, ' + det(c); }
+        const md = medidaDe(texto);
+        // SKU y medida necesitan al menos 3 ventas para ser confiables; el rodado se usa con lo que haya.
+        const pasos = [
+            ['el SKU', v => v.sku === sku, 3],
+            [md ? 'la medida ' + md.medida : null, v => md && v.medida === md.medida, 3],
+            [md ? 'el rodado ' + md.rodado : null, v => md && v.rodado === md.rodado, 1]
+        ];
+        for (const [nombre, pred, minN] of pasos) {
+            if (!nombre) continue;
+            const e = estimar(pred, 'envU');
+            if (e && e.n >= minN) { out.envio = e.valor; out.envioFuente = nombre + ', ' + det(e); break; }
+        }
+        return out;
+    }
 
     // ---------- armado por SKU ----------
     function construir() {
@@ -3305,7 +3417,9 @@ btnDownloadRestock.addEventListener('click', () => {
             // Nuestra mejor oferta: la publicación con menor precio por unidad
             const mejor = pool.reduce((a, b) => (b.precio / b.kitN < a.precio / a.kitN ? b : a));
             const info = costos[sku];
+            const cv = costosVenta(sku, mejor.mla.toUpperCase(), (info && info.desc) + ' ' + mejor.title);
             return {
+                ...cv,
                 sku,
                 desc: (info && info.desc) || mejor.title,
                 title: mejor.title,
@@ -3323,18 +3437,22 @@ btnDownloadRestock.addEventListener('click', () => {
 
     // Cálculo con la configuración actual + competidores guardados
     function evaluar(it) {
-        const com = Math.min(Math.max((parseFloat(inComision.value) || 0) / 100, 0), 0.95);
+        const comDef = (parseFloat(inComision.value) || 0) / 100;
+        const com = Math.min(Math.max(it.com != null ? it.com : comDef, 0), 0.95);
+        const envio = it.envio != null ? it.envio : (parseFloat(inEnvio.value) || 0);
+        const recib = (p) => p * (1 - com) - envio;
         const min = (parseFloat(inMargenMin.value) || 0) / 100;
         const dif = parseFloat(inDiferencia.value) || 0;
         const costo = it.costoBase != null ? it.costoBase * (chkIva.checked ? IVA : 1) : null;
-        const recibimos = it.precio * (1 - com);
+        const recibimos = recib(it.precio);
         const margen = costo != null ? recibimos - costo : null;
         const margenPct = costo ? margen / costo : null;
-        const piso = costo != null ? costo * (1 + min) / (1 - com) : null;   // precio más bajo aceptable
+        // precio más bajo aceptable: lo que recibimos cubre costo + margen mínimo
+        const piso = costo != null ? (costo * (1 + min) + envio) / (1 - com) : null;
         const comps = compsOf(it.sku);
         const conPrecio = comps.filter(c => c.precio > 0);
         const rival = conPrecio.length ? conPrecio.reduce((a, b) => (b.precio < a.precio ? b : a)) : null;
-        const r = { costo, recibimos, margen, margenPct, piso, comps, rival, estado: 'sin' };
+        const r = { costo, com, envio, recibimos, margen, margenPct, piso, comps, rival, estado: 'sin' };
         if (!rival) { r.estado = comps.length ? 'sinprecio' : 'sin'; return r; }
         if (it.precio <= rival.precio) {
             r.estado = 'ganamos';
@@ -3343,7 +3461,7 @@ btnDownloadRestock.addEventListener('click', () => {
             return r;
         }
         r.objetivo = Math.max(rival.precio - dif, 0);
-        r.recibObjetivo = r.objetivo * (1 - com);
+        r.recibObjetivo = recib(r.objetivo);
         r.margenObjetivo = costo != null ? r.recibObjetivo - costo : null;
         r.margenObjetivoPct = costo ? r.margenObjetivo / costo : null;
         if (costo == null) r.estado = 'sincosto';
@@ -3422,7 +3540,8 @@ btnDownloadRestock.addEventListener('click', () => {
                     <strong>${fmt$(it.precio)}</strong>${it.enPromo ? ' <span class="comp-tag">promo</span>' : ''}${it.esKit ? ' <span class="comp-tag">kit c/u</span>' : ''}
                     <div class="comp-sub"><a href="${pubUrl}" target="_blank" rel="noopener noreferrer">${esc(it.mla)}</a></div>
                 </td>
-                <td style="text-align:right;">${fmt$(ev.recibimos)}</td>
+                <td style="text-align:right; white-space:nowrap;">${fmt$(ev.recibimos)}
+                    <div class="comp-sub" title="Comisión: ${esc(it.comFuente)}&#10;Envío: ${esc(it.envioFuente)}">com ${fmtPct(ev.com)}${it.com == null ? '*' : ''} · envío ${fmt$(ev.envio)}${it.envio == null ? '*' : ''}</div></td>
                 <td style="text-align:right;" class="${mColor}"><strong>${fmt$(ev.margen)}</strong><div class="comp-sub">${fmtPct(ev.margenPct)}</div></td>
                 <td class="comp-cell">${compsHtml(it, ev)}</td>
                 <td style="text-align:right;">${fmt$(ev.piso)}</td>
@@ -3513,12 +3632,17 @@ btnDownloadRestock.addEventListener('click', () => {
             title: '¡Listo!',
             html: `Se armaron <b>${items.length}</b> SKU a partir de ${pubs.length} publicaciones.` +
                 (sinCosto ? `<br><span style="color:#b45309;">${sinCosto} SKU no están en el stock del sistema (sin costo).</span>` : '') +
+                (ventas
+                    ? `<br>Comisión real de la publicación en <b>${items.filter(i => i.com != null).length}</b> SKU y envío real (SKU, medida o rodado) en <b>${items.filter(i => i.envio != null).length}</b>. El resto usa los valores por defecto (marcados con *).`
+                    : `<br><span style="color:#b45309;">Sin el reporte de Ventas AR se usan la comisión y el envío por defecto para todo.</span>`) +
                 `<br><br>${cargados ? `Hay competidores guardados para <b>${cargados}</b> SKU.` : 'Todavía no hay competidores cargados: usá el botón <b>+ Competidor</b> en cada fila o <b>Importar competidores</b>.'}`,
             icon: 'success', confirmButtonColor: '#3b82f6'
         });
     });
 
-    [inBuscar, selVista, chkSoloStock, inComision, inMargenMin, inDiferencia, chkIva].forEach(el => {
+    // Cambiar el período recalcula las medianas de comisión/envío
+    inDias.addEventListener('input', () => { if (ventas) aplicarDefaultsVentas(); if (items.length) { construir(); render(); } });
+    [inBuscar, selVista, chkSoloStock, inComision, inEnvio, inMargenMin, inDiferencia, chkIva].forEach(el => {
         const ev = (el.type === 'text' || el.type === 'number') ? 'input' : 'change';
         el.addEventListener(ev, () => { if (items.length) render(); });
     });
@@ -3597,6 +3721,10 @@ btnDownloadRestock.addEventListener('click', () => {
             'Costo c/IVA': ev.costo != null ? Math.round(ev.costo) : '',
             'Nuestro precio': Math.round(it.precio),
             'Nuestro MLA': it.mla,
+            'Comisión %': +(ev.com * 100).toFixed(1),
+            'Origen comisión': it.comFuente,
+            'Envío $/u': Math.round(ev.envio),
+            'Origen envío': it.envioFuente,
             'Recibimos': Math.round(ev.recibimos),
             'Margen $': ev.margen != null ? Math.round(ev.margen) : '',
             'Margen %': ev.margenPct != null ? +(ev.margenPct * 100).toFixed(1) : '',
@@ -3611,7 +3739,7 @@ btnDownloadRestock.addEventListener('click', () => {
         }));
         const XLib = window.XLSXStyle || XLSX;
         const ws = XLib.utils.json_to_sheet(data);
-        ws['!cols'] = [14, 40, 7, 13, 14, 16, 13, 12, 9, 18, 18, 15, 13, 14, 14, 24, 60].map(w => ({ wch: w }));
+        ws['!cols'] = [14, 40, 7, 13, 14, 16, 11, 40, 11, 40, 13, 12, 9, 18, 18, 15, 13, 14, 14, 24, 60].map(w => ({ wch: w }));
         if (window.XLSXStyle) {
             const color = { bajar: 'C6EFCE', no: 'FFC7CE', ganamos: 'FFEB9C' };
             const nCols = Object.keys(data[0]).length;

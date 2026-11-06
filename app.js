@@ -3549,7 +3549,8 @@ btnDownloadRestock.addEventListener('click', () => {
             const color = ev.estado === 'bajar' ? 'comp-verde'
                 : (ev.estado === 'no' || (ev.margen != null && ev.margen < 0)) ? 'comp-rojo' : '';
             return `<tr class="comp-row comp-${ev.estado} ${color}">
-                <td style="font-weight:700; white-space:nowrap;">${esc(it.sku)}</td>
+                <td style="white-space:nowrap;"><span class="sku-cell"><strong>${esc(it.sku)}</strong>
+                    <button type="button" class="copy-sku-btn" data-act="copy" data-sku="${esc(it.sku)}" title="Copiar SKU" aria-label="Copiar SKU"><i class="fa-regular fa-copy"></i></button></span></td>
                 <td class="comp-prod">${esc(it.desc)}<div class="comp-sub">${it.nPubs} ${it.nPubs === 1 ? 'publicación' : 'publicaciones'}</div></td>
                 <td style="text-align:center;">${it.stock}<div class="comp-sub" title="Neumáticos vendidos en Mercado Libre en los últimos ${CML.dias || 90} días">${it.ventas} vend.</div></td>
                 <td style="text-align:right;">${fmt$(ev.costo)}</td>
@@ -3623,6 +3624,7 @@ btnDownloadRestock.addEventListener('click', () => {
         const sku = btn.dataset.sku;
         const act = btn.dataset.act;
         const comp = (store[sku] || []).find(c => c.id === btn.dataset.id);
+        if (act === 'copy') { copySku(sku, btn); return; }
         if (act === 'add') editarComp(sku, null);
         else if (act === 'more') { expandidos.has(sku) ? expandidos.delete(sku) : expandidos.add(sku); render(); }
         else if (act === 'edit' && comp) editarComp(sku, comp);

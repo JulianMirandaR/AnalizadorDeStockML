@@ -3607,13 +3607,20 @@ btnDownloadRestock.addEventListener('click', () => {
     });
     window.addEventListener('message', (e) => {
         if (e.origin !== location.origin || !e.data || e.data.tipo !== 'ml-login') return;
-        if (e.data.ok) { consultarEstadoMl(); Swal.fire({ title: 'Mercado Libre conectado', icon: 'success', timer: 1600, showConfirmButton: false }); }
+        if (e.data.ok) {
+            // Recién conectado y con datos cargados: arranca la búsqueda sola.
+            consultarEstadoMl().then(() => {
+                if (items.length) buscarCompetidoresMl();
+                else Swal.fire({ title: 'Mercado Libre conectado', icon: 'success', timer: 1600, showConfirmButton: false });
+            });
+        }
         else Swal.fire('No se pudo conectar', e.data.mensaje || '', 'error');
     });
 
     const TAMANO_LOTE = 10;
-    btnMlBuscar.addEventListener('click', async () => {
-        if (!items.length || mlBuscando) return;
+    btnMlBuscar.addEventListener('click', () => buscarCompetidoresMl());
+    async function buscarCompetidoresMl() {
+        if (!items.length || mlBuscando || !mlConectado) return;
         const lista = items.filter(it => !chkSoloStock.checked || it.stock > 0);
         const lotes = [];
         for (let i = 0; i < lista.length; i += TAMANO_LOTE) lotes.push(lista.slice(i, i + TAMANO_LOTE));
@@ -3663,7 +3670,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 (resumen.errores ? `<br><span style="color:#ef4444;">${resumen.errores} SKU no se pudieron consultar (probá de nuevo).</span>` : ''),
             icon: resumen.errores ? 'warning' : 'success', confirmButtonColor: '#3b82f6'
         });
-    });
+    }
 
     function aplicarResultadosMl(lote, data, resumen) {
         const res = data.resultados || {};
@@ -3715,6 +3722,12 @@ btnDownloadRestock.addEventListener('click', () => {
         construir();
         render();
         resultsPanel.classList.remove('hidden');
+        // Con Mercado Libre conectado, los competidores se buscan solos (sin tocar el botón).
+        if (mlConectado) {
+            $('results-panel-comp').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            buscarCompetidoresMl();
+            return;
+        }
         const sinCosto = items.filter(it => it.costoBase == null).length;
         const cargados = Object.keys(store).length;
         Swal.fire({

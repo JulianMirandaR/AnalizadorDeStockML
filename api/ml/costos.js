@@ -31,18 +31,27 @@ async function comision(precio, categoria, tipo, token) {
     return { pct, fijo: det.fixed_fee || 0, monto: d.sale_fee_amount };
 }
 
-// Costo del envío gratis que paga el vendedor por esa publicación
+// Costo del envío gratis que paga el vendedor por esa publicación.
+// Se prueban variantes del recurso de ML; "intentos" guarda el resultado de cada una (diagnóstico).
 async function envio(item, uid, token) {
-    const intentos = [
+    const intentos = [];
+    const sh = item.shipping || {};
+    const base = { item_price: String(item.price), listing_type_id: item.listing_type_id, mode: sh.mode || 'me2', condition: 'new' };
+    if (sh.logistic_type) base.logistic_type = sh.logistic_type;
+    const rutas = [
+        `/users/${uid}/shipping_options/free?` + new URLSearchParams({ item_id: item.id, ...base }),
         `/users/${uid}/shipping_options/free?item_id=${item.id}`,
         `/items/${item.id}/shipping_options/free`
     ];
-    for (const path of intentos) {
+    if (sh.dimensions) rutas.push(`/users/${uid}/shipping_options/free?` + new URLSearchParams({ dimensions: sh.dimensions, ...base }));
+    for (const path of rutas) {
         const r = await ml.mlGet(path, token);
-        const c = r.ok && r.data && r.data.coverage && r.data.coverage.all_country;
-        if (c && c.list_cost != null) return c.list_cost;
+        const d = r.data || {};
+        const c = d.coverage && d.coverage.all_country;
+        intentos.push({ ruta: path.split('?')[0] + (path.includes('dimensions=') ? '?dimensions' : path.includes('item_price') ? '?item_id+precio' : ''), estado: r.status, mensaje: d.message || d.error || (c ? 'ok' : '') });
+        if (c && c.list_cost != null) return { costo: c.list_cost, intentos };
     }
-    return null;
+    return { costo: null, intentos };
 }
 
 module.exports = async (req, res) => {
@@ -72,7 +81,8 @@ module.exports = async (req, res) => {
                 precio: it.price,
                 comisionPct: com ? com.pct : null,
                 cargoFijo: com ? com.fijo : null,
-                envio: env,
+                envio: env.costo,
+                ...(env.costo == null ? { envioIntentos: env.intentos } : {}),
                 logistica: it.shipping && it.shipping.logistic_type || null,
                 envioGratis: !!(it.shipping && it.shipping.free_shipping),
                 tipo: it.listing_type_id,

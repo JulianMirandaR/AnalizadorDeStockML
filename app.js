@@ -3709,7 +3709,7 @@ btnDownloadRestock.addEventListener('click', () => {
         mlBuscando = true;
         btnMlBuscar.disabled = true;
         mlProg.hidden = false;
-        const resumen = { conComp: 0, nuevos: 0, sinCatalogo: [], sinComp: 0, actualizados: 0, errores: 0, cambios: [], hayAnterior: !!(ultima && ultima.fecha) };
+        const resumen = { conComp: 0, nuevos: 0, sinCatalogo: [], sinComp: 0, actualizados: 0, errores: 0, cambios: [], hayAnterior: !!(ultima && ultima.fecha), noActualizables: 0 };
         let hechos = 0;
         let abortado = null;
         for (const lote of lotes) {
@@ -3762,6 +3762,7 @@ btnDownloadRestock.addEventListener('click', () => {
             title: 'Búsqueda terminada',
             html: `Se encontraron competidores para <b>${resumen.conComp}</b> SKU (${resumen.nuevos} publicaciones nuevas).` +
                 (resumen.actualizados ? `<br>Se actualizó el precio de <b>${resumen.actualizados}</b> competidores cargados a mano.` : '') +
+                (resumen.noActualizables ? `<br><span style="color:#b45309;">${resumen.noActualizables} competidores cargados a mano no están en el catálogo de ML: su precio no se puede actualizar solo (editalo a mano si cambió).</span>` : '') +
                 (resumen.sinComp ? `<br>${resumen.sinComp} SKU están en catálogo pero sin otros vendedores.` : '') +
                 (resumen.sinCatalogo.length ? `<br><span style="color:#b45309;">${resumen.sinCatalogo.length} SKU no están en el catálogo de ML: a esos hay que cargarles los competidores a mano.</span>` : '') +
                 (resumen.errores ? `<br><span style="color:#ef4444;">${resumen.errores} SKU no se pudieron consultar (probá de nuevo).</span>` : ''),
@@ -3781,8 +3782,11 @@ btnDownloadRestock.addEventListener('click', () => {
                 tipo, sku: it.sku, desc: it.desc, vendedor: c.vendedor || '', mla: c.mla, url: c.url,
                 antes: antes || null, ahora: ahora || null, nuestro: it.precio
             });
+            // ML no deja consultar publicaciones ajenas una por una, pero si el competidor
+            // manual está en el catálogo, su precio actual viene en la búsqueda por catálogo.
+            const delCatalogo = new Map((r.competidores || []).map(c => [c.mla, c]));
             manuales.forEach(c => {
-                const s = c.mla && seg[c.mla];
+                const s = (c.mla && delCatalogo.get(c.mla)) || (c.mla && seg[c.mla]);
                 delete c.precioAnterior;
                 if (s && s.precio > 0) {
                     if (s.precio !== c.precio) {
@@ -3792,7 +3796,7 @@ btnDownloadRestock.addEventListener('click', () => {
                     c.precio = s.precio;
                     if (!c.vendedor && s.vendedor) c.vendedor = s.vendedor;
                     resumen.actualizados++;
-                }
+                } else if (c.mla) resumen.noActualizables++;
             });
             // Los automáticos se reemplazan por los de esta búsqueda
             const previos = new Map((store[it.sku] || []).filter(c => c.auto).map(c => [c.mla, c]));

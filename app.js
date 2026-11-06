@@ -3139,6 +3139,12 @@ btnDownloadRestock.addEventListener('click', () => {
     // Reglas fijas: ganarle al rival por $1.000 y que el neto (lo que recibimos) quede por encima del costo c/IVA.
     const DIFERENCIA_RIVAL = 1000;
     // Comisión y envío de referencia (costos_ml.js, sacado del reporte Ventas AR)
+    // Impuestos que ML estima y descuenta en "Recibís" (retenciones según info fiscal). Se aplican
+    // junto con la comisión real de ML; la comisión aproximada del reporte de ventas ya los incluye en parte.
+    const IMPUESTOS_ML = 0.031;
+    // Costos reales de nuestras publicaciones consultados a ML (comisión y envío), por MLA
+    const COSTOS_KEY = 'competenciaML.costosml.v1';
+    let costosML = (() => { try { return JSON.parse(localStorage.getItem(COSTOS_KEY)) || {}; } catch (e) { return {}; } })();
     const CML = window.COSTOS_ML || { comisionDefault: 0.156, envioDefault: 18495, comisionPorMla: {}, envioPorSku: {}, envioPorMedida: {}, envioPorRodado: {} };
     let items = [];     // un elemento por SKU (base de la tabla)
 
@@ -3377,6 +3383,20 @@ btnDownloadRestock.addEventListener('click', () => {
             const mejor = pool.reduce((a, b) => (b.precio / b.kitN < a.precio / a.kitN ? b : a));
             const info = costos[sku];
             const cv = costosVenta(sku, mejor.mla.toUpperCase(), (info && info.desc) + ' ' + mejor.title);
+            cv.impuestos = 0;
+            const real = costosML[mejor.mla.toUpperCase()];
+            if (real && real.comisionPct != null) {
+                Object.assign(cv, {
+                    com: real.comisionPct, comReal: true, impuestos: IMPUESTOS_ML, cargoFijo: real.cargoFijo || 0,
+                    comFuente: `real de ML para esta publicación (${(real.comisionPct * 100).toFixed(1).replace('.', ',')}% + ${(IMPUESTOS_ML * 100).toFixed(1).replace('.', ',')}% impuestos estimados, consultado el ${fmtFecha(real.fecha)})`
+                });
+            }
+            if (real && real.envio != null) {
+                Object.assign(cv, {
+                    envio: real.envio / mejor.kitN, envioReal: true,
+                    envioFuente: `real de ML para esta publicación${real.logistica === 'fulfillment' ? ' (Full)' : ''}${mejor.kitN > 1 ? ', dividido por ' + mejor.kitN + ' neumáticos del kit' : ''} (consultado el ${fmtFecha(real.fecha)})`
+                });
+            }
             return {
                 ...cv,
                 sku,
@@ -3398,19 +3418,20 @@ btnDownloadRestock.addEventListener('click', () => {
     // Cálculo con la configuración actual + competidores guardados
     function evaluar(it) {
         const com = Math.min(Math.max(it.com, 0), 0.95);
-        const envio = it.envio;
-        const recib = (p) => p * (1 - com) - envio;
+        const imp = it.impuestos || 0;
+        const envio = it.envio + (it.cargoFijo || 0);
+        const recib = (p) => p * (1 - com - imp) - envio;
         const dif = DIFERENCIA_RIVAL;
         const costo = it.costoBase != null ? it.costoBase * IVA : null;
         const recibimos = recib(it.precio);
         const margen = costo != null ? recibimos - costo : null;
         const margenPct = costo ? margen / costo : null;
         // precio más bajo posible: a ese precio lo que recibimos es igual al costo
-        const piso = costo != null ? (costo + envio) / (1 - com) : null;
+        const piso = costo != null ? (costo + envio) / (1 - com - imp) : null;
         const comps = compsOf(it.sku);
         const conPrecio = comps.filter(c => c.precio > 0);
         const rival = conPrecio.length ? conPrecio.reduce((a, b) => (b.precio < a.precio ? b : a)) : null;
-        const r = { costo, com, envio, recibimos, margen, margenPct, piso, comps, rival, estado: 'sin' };
+        const r = { costo, com, imp, envio, recibimos, margen, margenPct, piso, comps, rival, estado: 'sin' };
         if (!rival) { r.estado = comps.length ? 'sinprecio' : 'sin'; return r; }
         if (it.precio <= rival.precio) {
             r.estado = 'ganamos';
@@ -3535,7 +3556,7 @@ btnDownloadRestock.addEventListener('click', () => {
                     <div class="comp-sub"><a href="${pubUrl}" target="_blank" rel="noopener noreferrer">${esc(it.mla)}</a></div>
                 </td>
                 <td style="text-align:right; white-space:nowrap;">${fmt$(ev.recibimos)}
-                    <div class="comp-sub" title="Comisión: ${esc(it.comFuente)}&#10;Envío: ${esc(it.envioFuente)}">com ${fmtPct(ev.com)}${it.comReal ? '' : '*'} · envío ${fmt$(ev.envio)}${it.envioReal ? '' : '*'}</div></td>
+                    <div class="comp-sub" title="Comisión: ${esc(it.comFuente)}&#10;Envío: ${esc(it.envioFuente)}">com ${fmtPct(ev.com)}${ev.imp ? ' + imp ' + fmtPct(ev.imp) : ''}${it.comReal ? '' : '*'} · envío ${fmt$(ev.envio)}${it.envioReal ? '' : '*'}</div></td>
                 <td style="text-align:right;" class="${mColor}"><strong>${fmt$(ev.margen)}</strong><div class="comp-sub">${fmtPct(ev.margenPct)}</div></td>
                 <td class="comp-cell">${compsHtml(it, ev)}</td>
                 <td style="text-align:right;">${fmt$(ev.piso)}</td>
@@ -3698,6 +3719,23 @@ btnDownloadRestock.addEventListener('click', () => {
     const HORAS_ACTUALIZACION = 20;   // "una vez por día"
     const tocaActualizar = () => !ultima || !ultima.fecha || (Date.now() - new Date(ultima.fecha).getTime()) > HORAS_ACTUALIZACION * 3600000;
 
+    // Comisión y envío reales de nuestra publicación más barata de cada SKU (ML sí permite
+    // consultarlos porque son publicaciones propias). Si falla, quedan los valores aproximados.
+    async function traerCostosML(lote) {
+        try {
+            const r = await fetch('/api/ml/costos', {
+                method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mlas: lote.map(it => it.mla) })
+            });
+            if (!r.ok) return;
+            const data = await r.json();
+            Object.entries(data.costos || {}).forEach(([mla, c]) => {
+                costosML[mla] = { comisionPct: c.comisionPct, cargoFijo: c.cargoFijo, envio: c.envio, logistica: c.logistica, fecha: hoy() };
+            });
+            try { localStorage.setItem(COSTOS_KEY, JSON.stringify(costosML)); } catch (e) { /* sin almacenamiento */ }
+        } catch (e) { console.warn('No se pudieron traer los costos de ML', e); }
+    }
+
     btnMlBuscar.addEventListener('click', () => buscarCompetidoresMl());
     async function buscarCompetidoresMl(opciones = {}) {
         if (!items.length || mlBuscando || !mlConectado) return;
@@ -3716,7 +3754,7 @@ btnDownloadRestock.addEventListener('click', () => {
             mlProgTxt.textContent = `${automatica ? 'Actualización diaria: ' : ''}Buscando en Mercado Libre... ${hechos} de ${lista.length} SKU`;
             mlProgFill.style.width = `${Math.round(hechos / lista.length * 100)}%`;
             // competidores cargados a mano en este lote: se les actualiza el precio
-            const seguir = lote.flatMap(it => compsOf(it.sku).filter(c => !c.auto && c.mla).map(c => c.mla));
+            const seguir = [];   // ML no deja consultar publicaciones ajenas: los manuales se actualizan desde el catálogo
             let data;
             try {
                 const r = await fetch('/api/ml/competidores', {
@@ -3734,12 +3772,15 @@ btnDownloadRestock.addEventListener('click', () => {
                 continue;
             }
             aplicarResultadosMl(lote, data, resumen);
+            await traerCostosML(lote);
             hechos += lote.length;
             saveStore();
             render();
         }
         mlBuscando = false;
         mlProg.hidden = true;
+        construir();   // recalcula con los costos reales de ML recién traídos
+        render();
         consultarEstadoMl();
         if (abortado) { Swal.fire('Búsqueda interrumpida', abortado, 'warning'); return; }
         if (resumen.errores < lista.length) {

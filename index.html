@@ -502,8 +502,7 @@
                         <li><span class="step-num">1</span> Subí el <strong>Excel de Publicaciones de ML</strong> (el de Modificar publicaciones, con columnas Precio y Precio en promoción). Por cada SKU se toma la publicación <strong>más barata</strong> (si tiene promo, el precio promo).</li>
                         <li><span class="step-num">2</span> Subí el <strong>Stock del Sistema</strong> (stock_todo) para tener el <strong>costo</strong> de cada SKU.</li>
                         <li><span class="step-num">3</span> En cada fila, cargá los <strong>links o MLA de los competidores</strong> con su precio. Quedan guardados en este navegador (podés exportarlos e importarlos en Excel).</li>
-                        <li><span class="step-num">4</span> <em>(Recomendado)</em> Subí el <strong>reporte de Ventas AR</strong>: de ahí se saca la <strong>comisión real</strong> de cada publicación y el <strong>costo de envío</strong> por SKU (o por medida/rodado si ese SKU no tuvo ventas).</li>
-                        <li><span class="step-num">5</span> El sistema calcula lo que recibimos (precio − comisión − envío) y te dice si <strong>podemos bajar para ganarle</strong> sin quedar debajo del margen mínimo.</li>
+                        <li><span class="step-num">4</span> El sistema calcula lo que <strong>recibimos</strong> = precio − comisión ML − envío (valores reales sacados de nuestras ventas; si la publicación no tuvo ventas, se aproxima con la medida o el rodado) y te dice si <strong>podemos bajar para ganarle</strong> y que el neto siga quedando <strong>por encima del costo</strong>.</li>
                     </ul>
                 </div>
             </section>
@@ -528,43 +527,6 @@
                     <input type="file" id="file-comp-stock" accept=".xlsx, .xls" hidden>
                     <div class="file-status" id="status-comp-stock">Sin archivo</div>
                 </div>
-
-                <div class="upload-card" id="drop-zone-comp-ventas">
-                    <div class="card-icon">
-                        <i class="fa-solid fa-truck"></i>
-                    </div>
-                    <h3>Ventas AR <span style="color: var(--text-secondary); font-weight: 400; font-size: 0.8rem;">(recomendado)</span></h3>
-                    <p>Comisión y envío reales de cada venta.</p>
-                    <input type="file" id="file-comp-ventas" accept=".xlsx, .xls" hidden>
-                    <div class="file-status" id="status-comp-ventas">Sin archivo</div>
-                </div>
-            </section>
-
-            <section class="config-section comp-config">
-                <div class="comp-field" title="Cargo por venta e impuestos de ML. Se usa para las publicaciones sin ventas en el reporte (si subís Ventas AR se completa solo con la mediana real).">
-                    <label for="comp-comision">Comisión ML por defecto (%):</label>
-                    <input type="number" id="comp-comision" value="14" min="0" max="90" step="0.1">
-                </div>
-                <div class="comp-field" title="Costo de envío por unidad cuando no hay ventas del SKU, de la medida ni del rodado (si subís Ventas AR se completa solo).">
-                    <label for="comp-envio">Envío por defecto ($/u):</label>
-                    <input type="number" id="comp-envio" value="18000" min="0" step="500" style="width:110px;">
-                </div>
-                <div class="comp-field" title="Solo se usan las ventas de los últimos N días para el envío y la comisión (el envío sube con el tiempo). Si un SKU no tiene ventas en ese período se usan todas.">
-                    <label for="comp-dias">Ventas de los últimos (días):</label>
-                    <input type="number" id="comp-dias" value="90" min="7" step="1">
-                </div>
-                <div class="comp-field" title="Ganancia mínima sobre el costo c/IVA que aceptás al bajar el precio.">
-                    <label for="comp-margen-min">Margen mínimo sobre costo (%):</label>
-                    <input type="number" id="comp-margen-min" value="10" min="0" step="0.5">
-                </div>
-                <div class="comp-field" title="Cuánto por debajo del competidor más barato querés quedar.">
-                    <label for="comp-diferencia">Quedar debajo del rival por ($):</label>
-                    <input type="number" id="comp-diferencia" value="1000" min="0" step="100">
-                </div>
-                <label class="comp-check">
-                    <input type="checkbox" id="comp-iva" checked>
-                    El costo del stock es s/IVA (sumar 21%)
-                </label>
             </section>
 
             <section class="actions-section">
@@ -652,7 +614,7 @@
                                 <th style="text-align:right;">Recibimos</th>
                                 <th style="text-align:right;">Margen</th>
                                 <th>Competidores</th>
-                                <th style="text-align:right;">Precio piso</th>
+                                <th style="text-align:right;" title="Precio más bajo al que el neto sigue cubriendo el costo">Mínimo sin perder</th>
                                 <th>Sugerencia</th>
                             </tr>
                         </thead>
@@ -835,6 +797,7 @@
         </div>
     </main>
 
+    <script src="./costos_ml.js"></script>
     <script src="./app.js"></script>
 </body>
 </html>

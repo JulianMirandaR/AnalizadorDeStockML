@@ -3462,6 +3462,8 @@ btnDownloadRestock.addEventListener('click', () => {
             case 'ventas': return (a, b) => b.it.ventas - a.it.ventas || b.it.stock - a.it.stock;
             case 'stock': return (a, b) => b.it.stock - a.it.stock;
             case 'margen': return (a, b) => nz(a.ev.margenPct) - nz(b.ev.margenPct);
+            // Sin costo (ganancia desconocida) quedan al final
+            case 'margen-desc': return (a, b) => (b.ev.margenPct == null ? -1e9 : b.ev.margenPct) - (a.ev.margenPct == null ? -1e9 : a.ev.margenPct);
             case 'sku': return (a, b) => a.it.sku.localeCompare(b.it.sku, 'es', { numeric: true });
             default: return (a, b) => (ORDEN[a.ev.estado] - ORDEN[b.ev.estado]) || (impacto(b) - impacto(a));
         }

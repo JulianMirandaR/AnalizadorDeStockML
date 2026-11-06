@@ -88,21 +88,13 @@ function setupDropZone(dropZone, fileInput, statusElement, type) {
         
         if (e.dataTransfer.files.length) {
             fileInput.files = e.dataTransfer.files;
-            if (type === 'ml' || type === 'sys') {
-                handleFileSelect(fileInput, statusElement, type);
-            } else {
-                handleFileSelectRentabilidad(fileInput, statusElement, type);
-            }
+            handleFileSelect(fileInput, statusElement, type);
         }
     });
 
     fileInput.addEventListener('change', () => {
         if (fileInput.files.length === 0) return;
-        if (type === 'ml' || type === 'sys') {
-            handleFileSelect(fileInput, statusElement, type);
-        } else {
-            handleFileSelectRentabilidad(fileInput, statusElement, type);
-        }
+        handleFileSelect(fileInput, statusElement, type);
     });
 }
 
@@ -935,305 +927,6 @@ if (btnDownloadMlPlanilla) btnDownloadMlPlanilla.addEventListener('click', () =>
         icon: 'success',
         confirmButtonColor: '#3b82f6'
     });
-});
-
-// --- NEW RENTABILIDAD LOGIC ---
-const fileGuerrini = document.getElementById('file-guerrini');
-const fileVentas = document.getElementById('file-ventas');
-const statusGuerrini = document.getElementById('status-guerrini');
-const statusVentas = document.getElementById('status-ventas');
-const btnProcessRentabilidad = document.getElementById('btn-process-rentabilidad');
-const resultsPanelRentabilidad = document.getElementById('results-panel-rentabilidad');
-const resultsBodyRentabilidad = document.getElementById('results-body-rentabilidad');
-const btnDownloadRentabilidad = document.getElementById('btn-download-rentabilidad');
-
-const statGanancia = document.getElementById('stat-ganancia');
-const statPerdida = document.getElementById('stat-perdida');
-
-const dropZoneGuerrini = document.getElementById('drop-zone-guerrini');
-const dropZoneVentas = document.getElementById('drop-zone-ventas');
-
-let dataGuerrini = {};
-let dataVentas = [];
-let finalResultsRentabilidad = [];
-
-setupDropZone(dropZoneGuerrini, fileGuerrini, statusGuerrini, 'guerrini');
-setupDropZone(dropZoneVentas, fileVentas, statusVentas, 'ventas');
-
-function handleFileSelectRentabilidad(input, statusElement, type) {
-    if (input.files.length === 0) return;
-    
-    const file = input.files[0];
-    statusElement.textContent = file.name;
-    statusElement.classList.add('uploaded');
-    
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
-            
-            if (type === 'guerrini') {
-                dataGuerrini = {}; // Reset
-                // Parse all sheets in Guerrini list
-                workbook.SheetNames.forEach(sheetName => {
-                    const worksheet = workbook.Sheets[sheetName];
-                    const json = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-                    parseGuerrini(json);
-                });
-            } else if (type === 'ventas') {
-                // Ventas ML report typically uses the first active sheet
-                const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-                const json = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-                dataVentas = parseVentas(json);
-            }
-            
-            if (Object.keys(dataGuerrini).length > 0 && dataVentas.length > 0) {
-                btnProcessRentabilidad.disabled = false;
-            }
-        } catch (error) {
-            Swal.fire('Error', 'No se pudo leer el archivo Excel.', 'error');
-            console.error(error);
-        }
-    };
-    reader.readAsArrayBuffer(file);
-}
-
-function parseGuerrini(rows) {
-    // Col A (0) = SKU, Col H (7) = Precio Base
-    for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        if (!row || row.length < 8) continue;
-        
-        let sku = row[0];
-        let price = row[7];
-        
-        if (sku !== undefined && sku !== null && sku !== '') {
-            sku = sku.toString().replace(/^['"]+/, '').replace(/['"]+$/, '').trim().toUpperCase();
-            // Handle possibility of string formatted price (e.g., "$ 1,000.00")
-            if(typeof price === 'string') {
-               price = parseFloat(price.replace(/[^0-9,-]+/g, '').replace(',', '.'));
-            } else {
-               price = parseFloat(price);
-            }
-            
-            if (!isNaN(price) && price > 0) {
-                // Apple discounts: 35%, 25%, 8% => price * 0.65 * 0.75 * 0.92 = price * 0.4485
-                let finalCost = price * 0.4485;
-                dataGuerrini[sku] = finalCost;
-            }
-        }
-    }
-}
-
-function parseVentas(rows) {
-    const list = [];
-    // Start reading from row 6 (index 5)
-    // Col V (21) = SKU, Col S (18) = Sold Price, Col G (6) = Quantity
-    for (let i = 5; i < rows.length; i++) {
-        const row = rows[i];
-        if (!row || row.length < 25) continue;
-        
-        let dateRaw = row[1];    // B
-        let paramSku = row[21]; // V
-        let soldPrice = row[18]; // S
-        let quantity = row[6];   // G
-        let title = row[24];     // Y
-        
-        if (paramSku !== undefined && paramSku !== null && paramSku !== '') {
-            let sku = paramSku.toString().replace(/^['"]+/, '').replace(/['"]+$/, '').trim().toUpperCase();
-            
-            if(typeof soldPrice === 'string') {
-               soldPrice = parseFloat(soldPrice.replace(/[^0-9,-]+/g, '').replace(',', '.'));
-            } else {
-               soldPrice = parseFloat(soldPrice);
-            }
-            
-            if(typeof quantity === 'string') {
-               quantity = parseFloat(quantity.replace(/[^0-9,-]+/g, '').replace(',', '.'));
-            } else {
-               quantity = parseFloat(quantity);
-            }
-            
-            // Prevent division by zero
-            if (isNaN(quantity) || quantity <= 0) {
-               quantity = 1;
-            }
-            
-            if (!isNaN(soldPrice)) {
-                // Divide the total sold price by the quantity to get the unit sold price
-                let unitSoldPrice = soldPrice / quantity;
-                
-                // Ignorar ventas con montos muy bajos, suelen ser devoluciones
-                if (unitSoldPrice > 1000) {
-                    list.push({ 
-                        rowIndex: i, 
-                        dateRaw: dateRaw, 
-                        sku: sku, 
-                        title: title || 'Sin detalle', 
-                        soldPrice: unitSoldPrice, 
-                        quantity: quantity 
-                    });
-                }
-            }
-        }
-    }
-    return list;
-}
-
-btnProcessRentabilidad.addEventListener('click', () => {
-    btnProcessRentabilidad.disabled = true;
-    btnProcessRentabilidad.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Procesando...';
-    
-    setTimeout(() => {
-        analizarRentabilidad();
-        renderTableRentabilidad();
-        
-        resultsPanelRentabilidad.classList.remove('hidden');
-        
-        btnProcessRentabilidad.innerHTML = '<i class="fa-solid fa-bolt"></i> Analizar Rentabilidad';
-        btnProcessRentabilidad.disabled = false;
-        
-        Swal.fire({
-            title: '¡Análisis de Rentabilidad Completado!',
-            text: `Se analizaron ${finalResultsRentabilidad.length} ventas.`,
-            icon: 'success',
-            confirmButtonColor: '#3b82f6'
-        });
-    }, 500); 
-});
-
-function formatter(val) {
-    return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(val);
-}
-
-function analizarRentabilidad() {
-    finalResultsRentabilidad = [];
-    let gananciaCount = 0;
-    let perdidaCount = 0;
-
-    dataVentas.forEach(venta => {
-        // Find if base SKU is present (or support Kit variations just in case, but usually exact SKU match is fine for sales)
-        let cost = dataGuerrini[venta.sku];
-        
-        // Let's also verify kit parsing like we did for stock, just in case they sell kits.
-        const kitMatchPrefix = venta.sku.match(/^KITX(\d+)-(.*)/);
-        const kitMatchSuffix = venta.sku.match(/^(.*)X(\d+)$/);
-        
-        if (cost === undefined) {
-            if (kitMatchPrefix) {
-                let multiplier = parseInt(kitMatchPrefix[1], 10);
-                let realSku = kitMatchPrefix[2];
-                if(dataGuerrini[realSku] !== undefined) {
-                   cost = dataGuerrini[realSku] * multiplier;
-                }
-            } else if (kitMatchSuffix) {
-                let multiplier = parseInt(kitMatchSuffix[2], 10);
-                let realSku = kitMatchSuffix[1];
-                if(dataGuerrini[realSku] !== undefined) {
-                   cost = dataGuerrini[realSku] * multiplier;
-                }
-            }
-        }
-
-        if (cost !== undefined) {
-            const unitProfit = venta.soldPrice - cost;
-            const totalDiferencia = unitProfit * venta.quantity;
-            
-            const estado = totalDiferencia > 0 ? 'Ganancia' : 'Pérdida';
-            const badgeClass = totalDiferencia > 0 ? 'bg-success' : 'bg-danger';
-            
-            if (totalDiferencia > 0) gananciaCount++;
-            else perdidaCount++;
-
-            finalResultsRentabilidad.push({
-                OriginalIndex: venta.rowIndex,
-                Fecha: venta.dateRaw,
-                SKU: venta.sku,
-                Title: venta.title,
-                CostoFinal: cost,
-                PrecioVendido: venta.soldPrice,
-                CantidadVendida: venta.quantity,
-                Resultado: totalDiferencia,
-                Estado: estado,
-                _badgeClass: badgeClass
-            });
-        }
-    });
-
-    statGanancia.textContent = gananciaCount;
-    statPerdida.textContent = perdidaCount;
-}
-
-function renderTableRentabilidad() {
-    resultsBodyRentabilidad.innerHTML = '';
-    
-    // El reporte de ML originalmente suele venir ordenado por fecha de forma descendente.
-    // Usamos el OriginalIndex para garantizar un orden cronológico exacto al del Excel madre,
-    // garantizando que las fechas queden correlativas en orden.
-    finalResultsRentabilidad.sort((a, b) => a.OriginalIndex - b.OriginalIndex);
-    
-    finalResultsRentabilidad.forEach(item => {
-        const tr = document.createElement('tr');
-        
-        let displayDate = item.Fecha ? item.Fecha.toString() : '';
-        // Si Excel envió la fecha como código serial (muy frecuente)
-        if (typeof item.Fecha === 'number') {
-            displayDate = new Date((item.Fecha - (25567 + 2)) * 86400 * 1000).toLocaleDateString('es-AR');
-        } else if (displayDate.length > 10 && displayDate.includes('T')) {
-            displayDate = displayDate.split('T')[0]; // Para fechas ISO reducidas
-        } else if (displayDate.length > 15) {
-            displayDate = displayDate.substring(0, 10); // Reducirlo para no ocupar mucho
-        }
-        
-        tr.innerHTML = `
-            <td><span style="font-size: 0.8rem; color: var(--text-secondary); white-space: nowrap;">${displayDate}</span></td>
-            <td><strong>${item.SKU}</strong></td>
-            <td><span style="font-size: 0.85rem; color: var(--text-secondary);">${item.Title}</span></td>
-            <td>${formatter(item.CostoFinal)}</td>
-            <td>${formatter(item.PrecioVendido)}</td>
-            <td><strong>x${item.CantidadVendida}</strong></td>
-            <td class="${item.Resultado > 0 ? 'text-success' : 'text-danger'}"><strong>${item.Resultado > 0 ? '+' : ''}${formatter(item.Resultado)}</strong></td>
-            <td><span class="status-badge ${item._badgeClass}">${item.Estado}</span></td>
-        `;
-        
-        resultsBodyRentabilidad.appendChild(tr);
-    });
-}
-
-btnDownloadRentabilidad.addEventListener('click', () => {
-    const excelData = finalResultsRentabilidad.map(item => {
-        return {
-            'Fecha Venta': item.Fecha,
-            'SKU': item.SKU,
-            'Detalle del Producto': item.Title,
-            'Costo Guerrini (Por Artículo Publicado) ($)': item.CostoFinal,
-            'Precio de Venta ML (Por Artículo Publicado) ($)': item.PrecioVendido,
-            'Unidades de este SKU Vendidas': item.CantidadVendida,
-            'Ganancia/Pérdida Total del Renglón ($)': item.Resultado,
-            'Estado': item.Estado
-        };
-    });
-    
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    
-    const wscols = [
-        {wch: 15}, // Fecha
-        {wch: 25}, // SKU
-        {wch: 45}, // Detalle
-        {wch: 20}, // Costo
-        {wch: 20}, // Venta
-        {wch: 20}, // Cantidad
-        {wch: 25}, // Resultado
-        {wch: 15}  // Estado
-    ];
-    ws['!cols'] = wscols;
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Rentabilidad");
-    
-    const dateStr = new Date().toISOString().split('T')[0];
-    XLSX.writeFile(wb, `Analisis_Rentabilidad_${dateStr}.xlsx`);
 });
 
 // --- DYNAMIC PARSER FOR MERCADO LIBRE FULL STOCK ---
@@ -3415,3 +3108,524 @@ btnDownloadRestock.addEventListener('click', () => {
     });
 })();
 
+// =============================================
+// --- MÓDULO COMPETENCIA ML ---
+// =============================================
+// Por cada SKU nuestro guarda los links/MLA de los competidores con su precio
+// (en localStorage, con export/import a Excel) y lo compara contra nuestra
+// publicación más barata: ¿podemos bajar para ganarle sin perder el margen mínimo?
+(function () {
+    const STORE_KEY = 'competenciaML.v1';
+    const IVA = 1.21;
+
+    const $ = (id) => document.getElementById(id);
+    const dropPub = $('drop-zone-comp-pub');
+    const dropStock = $('drop-zone-comp-stock');
+    if (!dropPub) return;
+    const filePub = $('file-comp-pub');
+    const fileStock = $('file-comp-stock');
+    const statusPub = $('status-comp-pub');
+    const statusStock = $('status-comp-stock');
+    const btnProcess = $('btn-process-comp');
+    const resultsPanel = $('results-panel-comp');
+    const tbody = $('results-body-comp');
+    const inComision = $('comp-comision');
+    const inMargenMin = $('comp-margen-min');
+    const inDiferencia = $('comp-diferencia');
+    const chkIva = $('comp-iva');
+    const inBuscar = $('comp-buscar');
+    const selVista = $('comp-vista');
+    const chkSoloStock = $('comp-solo-stock');
+
+    let pubs = null;    // [{sku, baseSku, kitN, mla, title, precio, precioLista, stock, full}]
+    let costos = null;  // { SKU: {costo, desc} }
+    let items = [];     // un elemento por SKU (base de la tabla)
+
+    // ---------- helpers ----------
+    const esc = (s) => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const fmt$ = (n) => (n == null || isNaN(n)) ? '—' : '$' + Math.round(n).toLocaleString('es-AR');
+    const fmtPct = (n) => (n == null || isNaN(n)) ? '—' : (n * 100).toFixed(1).replace('.', ',') + '%';
+    const toNum = (v) => {
+        if (v === null || v === undefined || v === '' || v === '-') return null;
+        if (typeof v === 'number') return v;
+        let s = String(v).replace(/[^0-9,.-]/g, '');
+        if (/,\d{1,2}$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');   // 98.000,50
+        else s = s.replace(/[.,](?=\d{3}(\D|$))/g, '');                        // 98.000 / 98,000
+        const n = parseFloat(s);
+        return isNaN(n) ? null : n;
+    };
+    const normSku = (s) => String(s == null ? '' : s).replace(/^['"]+|['"]+$/g, '').trim().toUpperCase();
+    const hoy = () => new Date().toISOString().slice(0, 10);
+    const fmtFecha = (iso) => iso ? iso.slice(8, 10) + '/' + iso.slice(5, 7) : '';
+
+    // Link o MLA → { mla, url }
+    function parseRef(input) {
+        const raw = String(input || '').trim();
+        if (!raw) return null;
+        const m = raw.match(/MLA[-_ ]?(\d{6,})/i) || raw.match(/^(\d{8,})$/);
+        const mla = m ? 'MLA' + m[1] : '';
+        let url = /^https?:\/\//i.test(raw) ? raw.split('#')[0] : '';
+        if (!url && mla) url = 'https://articulo.mercadolibre.com.ar/MLA-' + mla.slice(3);
+        if (!mla && !url) return null;
+        return { mla, url };
+    }
+
+    // ---------- almacenamiento de competidores ----------
+    function loadStore() {
+        try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) { return {}; }
+    }
+    let store = loadStore();
+    function saveStore() {
+        try { localStorage.setItem(STORE_KEY, JSON.stringify(store)); }
+        catch (e) { Swal.fire('Atención', 'No se pudieron guardar los competidores en este navegador. Exportalos a Excel para no perderlos.', 'warning'); }
+    }
+    const compsOf = (sku) => store[sku] || [];
+    function upsertComp(sku, comp) {
+        const list = store[sku] || (store[sku] = []);
+        const same = list.find(c => (comp.mla && c.mla === comp.mla) || (!comp.mla && c.url === comp.url));
+        if (same) Object.assign(same, comp, { id: same.id });
+        else list.push(Object.assign({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6) }, comp));
+    }
+
+    // ---------- parsers ----------
+    function findHeader(rows, needles) {
+        for (let i = 0; i < Math.min(rows.length, 25); i++) {
+            const up = (rows[i] || []).map(c => String(c).trim().toUpperCase());
+            if (needles.every(n => up.some(h => h === n || h.includes(n)))) return i;
+        }
+        return -1;
+    }
+
+    // Excel de "Modificar publicaciones" de ML (ITEM_ID, SKU, TITLE, PRICE, SALE_PRICE, STOCK...)
+    function parsePublicaciones(rows) {
+        const h = findHeader(rows, ['ITEM_ID', 'SKU', 'PRICE']);
+        if (h === -1) throw new Error('No encontré las columnas ITEM_ID, SKU y PRICE. Bajá el Excel de Modificar publicaciones incluyendo los precios.');
+        const up = rows[h].map(c => String(c).trim().toUpperCase());
+        const c = (name) => up.indexOf(name);
+        const cMla = c('ITEM_ID'), cSku = c('SKU'), cTitle = c('TITLE'), cPrice = c('PRICE'),
+            cSale = c('SALE_PRICE'), cTotal = c('TOTAL_STOCK_ALL_STORES'), cFlex = c('STOCK_FLEX'), cFull = c('STOCK_FULL');
+        const out = [];
+        for (let i = h + 1; i < rows.length; i++) {
+            const r = rows[i];
+            if (!r) continue;
+            const mla = String(r[cMla] || '').trim();
+            if (!/^MLA\d+/i.test(mla)) continue;
+            const sku = normSku(r[cSku]);
+            if (!sku) continue;
+            const lista = toNum(r[cPrice]);
+            const promo = cSale !== -1 ? toNum(r[cSale]) : null;
+            const precio = (promo != null && promo > 0) ? promo : lista;
+            if (precio == null || precio <= 0) continue;
+            const kit = sku.match(/^KITX(\d+)-(.+)$/);
+            const stockCol = cTotal !== -1 ? cTotal : cFlex;
+            out.push({
+                sku, mla,
+                baseSku: kit ? kit[2] : sku,
+                kitN: kit ? parseInt(kit[1], 10) : 1,
+                title: cTitle !== -1 ? String(r[cTitle] || '').trim() : '',
+                precio, precioLista: lista, enPromo: promo != null && promo > 0 && promo < lista,
+                stock: stockCol !== -1 ? (toNum(r[stockCol]) || 0) : 0,
+                full: cFull !== -1 ? (toNum(r[cFull]) || 0) : 0
+            });
+        }
+        if (!out.length) throw new Error('El archivo no tiene publicaciones con SKU y precio.');
+        return out;
+    }
+
+    // stock_todo: SKU → costo y descripción
+    function parseStockTodo(rows) {
+        const h = findHeader(rows, ['SKU', 'COSTO']);
+        if (h === -1) throw new Error("El stock del sistema no tiene columnas 'SKU' y 'Costo'.");
+        const up = rows[h].map(c => String(c).trim().toUpperCase());
+        const cSku = up.indexOf('SKU');
+        let cCosto = up.findIndex(x => x.startsWith('COSTO S/IVA'));
+        if (cCosto === -1) cCosto = up.findIndex(x => x.startsWith('COSTO'));
+        const cDesc = up.findIndex(x => x.startsWith('DESCRIP'));
+        const map = {};
+        for (let i = h + 1; i < rows.length; i++) {
+            const r = rows[i];
+            if (!r) continue;
+            const sku = normSku(r[cSku]);
+            const costo = toNum(r[cCosto]);
+            if (!sku || costo == null || costo <= 0) continue;
+            map[sku] = { costo, desc: cDesc !== -1 ? String(r[cDesc] || '').trim() : '' };
+        }
+        return map;
+    }
+
+    // ---------- carga de archivos ----------
+    function setupDrop(zone, input, status, type) {
+        zone.addEventListener('click', () => input.click());
+        zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag-over'); });
+        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+        zone.addEventListener('drop', (e) => {
+            e.preventDefault(); zone.classList.remove('drag-over');
+            if (e.dataTransfer.files.length) readFile(e.dataTransfer.files[0], status, type);
+        });
+        input.addEventListener('change', () => { if (input.files.length) readFile(input.files[0], status, type); input.value = ''; });
+    }
+    function readFile(file, status, type) {
+        status.textContent = file.name;
+        status.classList.add('uploaded');
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                const name = type === 'pub' && wb.SheetNames.includes('Publicaciones') ? 'Publicaciones' : wb.SheetNames[0];
+                const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' });
+                if (type === 'pub') pubs = parsePublicaciones(rows);
+                else costos = parseStockTodo(rows);
+                btnProcess.disabled = !(pubs && costos);
+                if (items.length) { construir(); render(); }
+            } catch (err) {
+                console.error(err);
+                status.textContent = 'Error al leer';
+                status.classList.remove('uploaded');
+                if (type === 'pub') pubs = null; else costos = null;
+                btnProcess.disabled = true;
+                Swal.fire('Error', err.message || 'No se pudo leer el archivo.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+    setupDrop(dropPub, filePub, statusPub, 'pub');
+    setupDrop(dropStock, fileStock, statusStock, 'stock');
+
+    // ---------- armado por SKU ----------
+    function construir() {
+        const bySku = new Map();
+        pubs.forEach(p => {
+            if (!bySku.has(p.baseSku)) bySku.set(p.baseSku, []);
+            bySku.get(p.baseSku).push(p);
+        });
+        items = [...bySku.entries()].map(([sku, ps]) => {
+            const simples = ps.filter(p => p.kitN === 1);
+            const pool = simples.length ? simples : ps;
+            // Nuestra mejor oferta: la publicación con menor precio por unidad
+            const mejor = pool.reduce((a, b) => (b.precio / b.kitN < a.precio / a.kitN ? b : a));
+            const info = costos[sku];
+            return {
+                sku,
+                desc: (info && info.desc) || mejor.title,
+                title: mejor.title,
+                mla: mejor.mla,
+                precio: mejor.precio / mejor.kitN,
+                enPromo: mejor.enPromo,
+                esKit: mejor.kitN > 1,
+                nPubs: ps.length,
+                mlas: ps.map(p => p.mla),
+                stock: Math.max(...ps.map(p => p.stock)) + Math.max(...ps.map(p => p.full)),
+                costoBase: info ? info.costo : null
+            };
+        });
+    }
+
+    // Cálculo con la configuración actual + competidores guardados
+    function evaluar(it) {
+        const com = Math.min(Math.max((parseFloat(inComision.value) || 0) / 100, 0), 0.95);
+        const min = (parseFloat(inMargenMin.value) || 0) / 100;
+        const dif = parseFloat(inDiferencia.value) || 0;
+        const costo = it.costoBase != null ? it.costoBase * (chkIva.checked ? IVA : 1) : null;
+        const recibimos = it.precio * (1 - com);
+        const margen = costo != null ? recibimos - costo : null;
+        const margenPct = costo ? margen / costo : null;
+        const piso = costo != null ? costo * (1 + min) / (1 - com) : null;   // precio más bajo aceptable
+        const comps = compsOf(it.sku);
+        const conPrecio = comps.filter(c => c.precio > 0);
+        const rival = conPrecio.length ? conPrecio.reduce((a, b) => (b.precio < a.precio ? b : a)) : null;
+        const r = { costo, recibimos, margen, margenPct, piso, comps, rival, estado: 'sin' };
+        if (!rival) { r.estado = comps.length ? 'sinprecio' : 'sin'; return r; }
+        if (it.precio <= rival.precio) {
+            r.estado = 'ganamos';
+            const techo = rival.precio - dif;
+            if (techo > it.precio + 1) r.podriaSubir = techo;
+            return r;
+        }
+        r.objetivo = Math.max(rival.precio - dif, 0);
+        r.recibObjetivo = r.objetivo * (1 - com);
+        r.margenObjetivo = costo != null ? r.recibObjetivo - costo : null;
+        r.margenObjetivoPct = costo ? r.margenObjetivo / costo : null;
+        if (costo == null) r.estado = 'sincosto';
+        else r.estado = r.objetivo >= piso ? 'bajar' : 'no';
+        return r;
+    }
+
+    // ---------- render ----------
+    const ORDEN = { bajar: 0, no: 1, sincosto: 2, sinprecio: 3, ganamos: 4, sin: 5 };
+
+    function filasVisibles() {
+        const q = inBuscar.value.trim().toLowerCase();
+        const vista = selVista.value;
+        return items
+            .map(it => ({ it, ev: evaluar(it) }))
+            .filter(({ it, ev }) => {
+                if (chkSoloStock.checked && !(it.stock > 0)) return false;
+                if (q && !(it.sku.toLowerCase().includes(q) || it.desc.toLowerCase().includes(q) ||
+                    it.title.toLowerCase().includes(q) || it.mlas.some(m => m.toLowerCase().includes(q)) ||
+                    ev.comps.some(c => (c.mla || '').toLowerCase().includes(q) || (c.vendedor || '').toLowerCase().includes(q)))) return false;
+                switch (vista) {
+                    case 'con': return ev.comps.length > 0;
+                    case 'sin': return ev.comps.length === 0;
+                    case 'bajar': return ev.estado === 'bajar';
+                    case 'no': return ev.estado === 'no';
+                    case 'ganamos': return ev.estado === 'ganamos';
+                    default: return true;
+                }
+            })
+            .sort((a, b) => (ORDEN[a.ev.estado] - ORDEN[b.ev.estado]) || (b.it.stock - a.it.stock));
+    }
+
+    function sugerenciaHtml(it, ev) {
+        switch (ev.estado) {
+            case 'bajar':
+                return `<span class="status-badge bg-success">Bajar a ${fmt$(ev.objetivo)}</span>
+                    <div class="comp-sub">Nos gana por ${fmt$(it.precio - ev.rival.precio)}. Recibiríamos ${fmt$(ev.recibObjetivo)} · margen ${fmt$(ev.margenObjetivo)} (${fmtPct(ev.margenObjetivoPct)})</div>`;
+            case 'no':
+                return `<span class="status-badge bg-danger">No conviene</span>
+                    <div class="comp-sub">Para ganarle habría que ir a ${fmt$(ev.objetivo)}, debajo del piso ${fmt$(ev.piso)} (margen ${fmtPct(ev.margenObjetivoPct)})</div>`;
+            case 'ganamos':
+                return `<span class="status-badge bg-warning">Ya somos más baratos</span>
+                    <div class="comp-sub">Por ${fmt$(ev.rival.precio - it.precio)}${ev.podriaSubir ? `. Se podría subir hasta ${fmt$(ev.podriaSubir)} y seguir ganando` : ''}</div>`;
+            case 'sincosto': return `<span class="status-badge bg-info">Sin costo</span><div class="comp-sub">El SKU no está en el stock del sistema</div>`;
+            case 'sinprecio': return `<span class="status-badge bg-info">Falta precio</span><div class="comp-sub">Cargá el precio del competidor</div>`;
+            default: return `<span class="comp-muted">Sin competidores</span>`;
+        }
+    }
+
+    function compsHtml(it, ev) {
+        const chips = ev.comps.map(c => {
+            const best = ev.rival && c.id === ev.rival.id;
+            const label = c.mla || 'Link';
+            return `<div class="comp-chip${best ? ' best' : ''}" title="${esc(c.url)}">
+                <a href="${esc(c.url)}" target="_blank" rel="noopener noreferrer">${esc(label)} <i class="fa-solid fa-arrow-up-right-from-square"></i></a>
+                ${c.vendedor ? `<span class="comp-vend">${esc(c.vendedor)}</span>` : ''}
+                <button class="comp-price" data-act="edit" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Editar precio / datos">${c.precio > 0 ? fmt$(c.precio) : 'sin precio'}</button>
+                ${c.fecha ? `<span class="comp-date" title="Precio actualizado el ${esc(c.fecha)}">${fmtFecha(c.fecha)}</span>` : ''}
+                <button class="comp-del" data-act="del" data-sku="${esc(it.sku)}" data-id="${esc(c.id)}" title="Quitar competidor"><i class="fa-solid fa-xmark"></i></button>
+            </div>`;
+        }).join('');
+        return `${chips}<button class="comp-add" data-act="add" data-sku="${esc(it.sku)}"><i class="fa-solid fa-plus"></i> Competidor</button>`;
+    }
+
+    function render() {
+        const filas = filasVisibles();
+        tbody.innerHTML = filas.map(({ it, ev }) => {
+            const mColor = ev.margen == null ? '' : ev.margen < 0 ? 'text-danger' : 'text-success';
+            const pubUrl = 'https://articulo.mercadolibre.com.ar/MLA-' + it.mla.replace(/^MLA/i, '');
+            return `<tr class="comp-row comp-${ev.estado}">
+                <td style="font-weight:700; white-space:nowrap;">${esc(it.sku)}</td>
+                <td class="comp-prod">${esc(it.desc)}<div class="comp-sub">${it.nPubs} ${it.nPubs === 1 ? 'publicación' : 'publicaciones'}</div></td>
+                <td style="text-align:center;">${it.stock}</td>
+                <td style="text-align:right;">${fmt$(ev.costo)}</td>
+                <td style="text-align:right; white-space:nowrap;">
+                    <strong>${fmt$(it.precio)}</strong>${it.enPromo ? ' <span class="comp-tag">promo</span>' : ''}${it.esKit ? ' <span class="comp-tag">kit c/u</span>' : ''}
+                    <div class="comp-sub"><a href="${pubUrl}" target="_blank" rel="noopener noreferrer">${esc(it.mla)}</a></div>
+                </td>
+                <td style="text-align:right;">${fmt$(ev.recibimos)}</td>
+                <td style="text-align:right;" class="${mColor}"><strong>${fmt$(ev.margen)}</strong><div class="comp-sub">${fmtPct(ev.margenPct)}</div></td>
+                <td class="comp-cell">${compsHtml(it, ev)}</td>
+                <td style="text-align:right;">${fmt$(ev.piso)}</td>
+                <td class="comp-sug">${sugerenciaHtml(it, ev)}</td>
+            </tr>`;
+        }).join('') || `<tr><td colspan="10" style="text-align:center; color:var(--text-secondary);">No hay filas para este filtro.</td></tr>`;
+
+        // Estadísticas sobre todo el universo (respeta "solo con stock")
+        const all = items.filter(it => !chkSoloStock.checked || it.stock > 0).map(it => evaluar(it));
+        $('stat-comp-con').textContent = all.filter(e => e.comps.length).length;
+        $('stat-comp-bajar').textContent = all.filter(e => e.estado === 'bajar').length;
+        $('stat-comp-no').textContent = all.filter(e => e.estado === 'no').length;
+        $('stat-comp-ganamos').textContent = all.filter(e => e.estado === 'ganamos').length;
+    }
+
+    // ---------- alta / edición de competidores ----------
+    async function editarComp(sku, comp) {
+        const it = items.find(x => x.sku === sku);
+        const { value } = await Swal.fire({
+            title: comp ? 'Editar competidor' : 'Agregar competidor',
+            html: `<div class="comp-form">
+                <div class="comp-form-prod">${esc(sku)} · ${esc(it ? it.desc : '')}${it ? `<br>Nuestro precio: <b>${fmt$(it.precio)}</b>` : ''}</div>
+                <label>Link de la publicación o MLA</label>
+                <input id="cf-ref" class="swal2-input" placeholder="https://articulo.mercadolibre.com.ar/MLA-... o MLA123456789" value="${esc(comp ? (comp.url || comp.mla) : '')}">
+                <label>Precio del competidor ($)</label>
+                <input id="cf-precio" class="swal2-input" inputmode="decimal" placeholder="98000" value="${comp && comp.precio ? Math.round(comp.precio) : ''}">
+                <label>Vendedor (opcional)</label>
+                <input id="cf-vend" class="swal2-input" placeholder="Nombre del vendedor" value="${esc(comp ? comp.vendedor || '' : '')}">
+            </div>`,
+            focusConfirm: false,
+            showCancelButton: true,
+            confirmButtonText: 'Guardar',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#3b82f6',
+            didOpen: () => { const el = document.getElementById(comp ? 'cf-precio' : 'cf-ref'); if (el) { el.focus(); el.select(); } },
+            preConfirm: () => {
+                const ref = parseRef(document.getElementById('cf-ref').value);
+                if (!ref) { Swal.showValidationMessage('Pegá el link de la publicación o su número MLA'); return false; }
+                const precio = toNum(document.getElementById('cf-precio').value);
+                if (precio != null && precio < 0) { Swal.showValidationMessage('Precio inválido'); return false; }
+                return { ...ref, precio: precio || null, vendedor: document.getElementById('cf-vend').value.trim() };
+            }
+        });
+        if (!value) return;
+        if (comp) {
+            // si cambió el MLA, se reemplaza el registro
+            const list = store[sku] || [];
+            const idx = list.findIndex(c => c.id === comp.id);
+            const prevPrecio = comp.precio;
+            const upd = { ...comp, ...value, fecha: value.precio !== prevPrecio ? hoy() : comp.fecha };
+            if (idx !== -1) list[idx] = upd;
+        } else {
+            upsertComp(sku, { ...value, fecha: hoy() });
+        }
+        saveStore();
+        render();
+    }
+
+    tbody.addEventListener('click', async (e) => {
+        const btn = e.target.closest('button[data-act]');
+        if (!btn) return;
+        const sku = btn.dataset.sku;
+        const act = btn.dataset.act;
+        const comp = (store[sku] || []).find(c => c.id === btn.dataset.id);
+        if (act === 'add') editarComp(sku, null);
+        else if (act === 'edit' && comp) editarComp(sku, comp);
+        else if (act === 'del' && comp) {
+            const ok = await Swal.fire({
+                title: '¿Quitar competidor?', text: `${comp.mla || comp.url} de ${sku}`, icon: 'question',
+                showCancelButton: true, confirmButtonText: 'Quitar', cancelButtonText: 'Cancelar', confirmButtonColor: '#ef4444'
+            });
+            if (!ok.isConfirmed) return;
+            store[sku] = (store[sku] || []).filter(c => c.id !== comp.id);
+            if (!store[sku].length) delete store[sku];
+            saveStore();
+            render();
+        }
+    });
+
+    // ---------- botones ----------
+    btnProcess.addEventListener('click', () => {
+        construir();
+        render();
+        resultsPanel.classList.remove('hidden');
+        const sinCosto = items.filter(it => it.costoBase == null).length;
+        const cargados = Object.keys(store).length;
+        Swal.fire({
+            title: '¡Listo!',
+            html: `Se armaron <b>${items.length}</b> SKU a partir de ${pubs.length} publicaciones.` +
+                (sinCosto ? `<br><span style="color:#b45309;">${sinCosto} SKU no están en el stock del sistema (sin costo).</span>` : '') +
+                `<br><br>${cargados ? `Hay competidores guardados para <b>${cargados}</b> SKU.` : 'Todavía no hay competidores cargados: usá el botón <b>+ Competidor</b> en cada fila o <b>Importar competidores</b>.'}`,
+            icon: 'success', confirmButtonColor: '#3b82f6'
+        });
+    });
+
+    [inBuscar, selVista, chkSoloStock, inComision, inMargenMin, inDiferencia, chkIva].forEach(el => {
+        const ev = (el.type === 'text' || el.type === 'number') ? 'input' : 'change';
+        el.addEventListener(ev, () => { if (items.length) render(); });
+    });
+
+    // Exportar competidores (respaldo / pasar a otra PC)
+    $('btn-comp-export').addEventListener('click', () => {
+        const rows = [];
+        Object.keys(store).sort().forEach(sku => {
+            const it = items.find(x => x.sku === sku);
+            store[sku].forEach(c => rows.push({
+                'SKU': sku, 'Producto': it ? it.desc : '', 'Link': c.url, 'MLA': c.mla,
+                'Vendedor': c.vendedor || '', 'Precio': c.precio || '', 'Fecha precio': c.fecha || ''
+            }));
+        });
+        if (!rows.length) { Swal.fire({ title: 'Sin competidores', text: 'Todavía no cargaste ningún competidor.', icon: 'info', confirmButtonColor: '#3b82f6' }); return; }
+        const ws = XLSX.utils.json_to_sheet(rows);
+        ws['!cols'] = [{ wch: 14 }, { wch: 40 }, { wch: 60 }, { wch: 16 }, { wch: 20 }, { wch: 12 }, { wch: 12 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Competidores');
+        XLSX.writeFile(wb, `Competidores_ML_${hoy()}.xlsx`);
+    });
+
+    // Importar competidores: columnas SKU + (Link o MLA) [+ Vendedor, Precio, Fecha precio]
+    const fileImport = $('file-comp-import');
+    $('btn-comp-import').addEventListener('click', () => fileImport.click());
+    fileImport.addEventListener('change', () => {
+        const file = fileImport.files[0];
+        fileImport.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+                const h = findHeader(rows, ['SKU']);
+                if (h === -1) throw new Error("El Excel necesita una columna 'SKU' y otra 'Link' o 'MLA'.");
+                const up = rows[h].map(c => String(c).trim().toUpperCase());
+                const cSku = up.indexOf('SKU');
+                const cLink = up.findIndex(x => x.startsWith('LINK') || x === 'URL');
+                const cMla = up.findIndex(x => x === 'MLA' || x.startsWith('MLA'));
+                const cVend = up.findIndex(x => x.startsWith('VENDEDOR'));
+                const cPrecio = up.findIndex(x => x.startsWith('PRECIO'));
+                const cFecha = up.findIndex(x => x.startsWith('FECHA'));
+                if (cLink === -1 && cMla === -1) throw new Error("El Excel necesita una columna 'Link' o 'MLA'.");
+                let n = 0, skus = new Set();
+                for (let i = h + 1; i < rows.length; i++) {
+                    const r = rows[i];
+                    const sku = normSku(r[cSku]);
+                    const ref = parseRef((cLink !== -1 && r[cLink]) ? r[cLink] : (cMla !== -1 ? r[cMla] : ''));
+                    if (!sku || !ref) continue;
+                    const precio = cPrecio !== -1 ? toNum(r[cPrecio]) : null;
+                    const fecha = cFecha !== -1 && /^\d{4}-\d{2}-\d{2}$/.test(String(r[cFecha])) ? String(r[cFecha]) : hoy();
+                    upsertComp(sku, { ...ref, precio: precio || null, vendedor: cVend !== -1 ? String(r[cVend] || '').trim() : '', fecha });
+                    n++; skus.add(sku);
+                }
+                saveStore();
+                if (items.length) render();
+                Swal.fire({ title: 'Importado', html: `Se cargaron <b>${n}</b> competidores para <b>${skus.size}</b> SKU.`, icon: 'success', confirmButtonColor: '#3b82f6' });
+            } catch (err) {
+                console.error(err);
+                Swal.fire('Error', err.message || 'No se pudo leer el archivo.', 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    });
+
+    // Descargar el análisis completo
+    $('btn-download-comp').addEventListener('click', () => {
+        const filas = filasVisibles();
+        if (!filas.length) { Swal.fire({ title: 'Sin datos', text: 'No hay filas para exportar.', icon: 'warning', confirmButtonColor: '#3b82f6' }); return; }
+        const ESTADO = { bajar: 'Podemos bajar', no: 'No conviene bajar', ganamos: 'Ya somos más baratos', sincosto: 'Sin costo', sinprecio: 'Falta precio del competidor', sin: 'Sin competidores' };
+        const data = filas.map(({ it, ev }) => ({
+            'SKU': it.sku,
+            'Producto': it.desc,
+            'Stock': it.stock,
+            'Costo c/IVA': ev.costo != null ? Math.round(ev.costo) : '',
+            'Nuestro precio': Math.round(it.precio),
+            'Nuestro MLA': it.mla,
+            'Recibimos': Math.round(ev.recibimos),
+            'Margen $': ev.margen != null ? Math.round(ev.margen) : '',
+            'Margen %': ev.margenPct != null ? +(ev.margenPct * 100).toFixed(1) : '',
+            'Competidor más barato': ev.rival ? (ev.rival.mla || ev.rival.url) : '',
+            'Vendedor': ev.rival ? (ev.rival.vendedor || '') : '',
+            'Precio competidor': ev.rival ? ev.rival.precio : '',
+            'Precio piso': ev.piso != null ? Math.round(ev.piso) : '',
+            'Precio sugerido': ev.estado === 'bajar' ? Math.round(ev.objetivo) : '',
+            'Margen con precio sugerido': ev.estado === 'bajar' ? Math.round(ev.margenObjetivo) : '',
+            'Estado': ESTADO[ev.estado] || '',
+            'Todos los competidores': ev.comps.map(c => `${c.mla || c.url} ${c.precio ? fmt$(c.precio) : ''}`.trim()).join(' | ')
+        }));
+        const XLib = window.XLSXStyle || XLSX;
+        const ws = XLib.utils.json_to_sheet(data);
+        ws['!cols'] = [14, 40, 7, 13, 14, 16, 13, 12, 9, 18, 18, 15, 13, 14, 14, 24, 60].map(w => ({ wch: w }));
+        if (window.XLSXStyle) {
+            const color = { bajar: 'C6EFCE', no: 'FFC7CE', ganamos: 'FFEB9C' };
+            const nCols = Object.keys(data[0]).length;
+            filas.forEach(({ ev }, i) => {
+                const rgb = color[ev.estado];
+                if (!rgb) return;
+                for (let c = 0; c < nCols; c++) {
+                    const a = XLib.utils.encode_cell({ r: i + 1, c });
+                    if (ws[a]) ws[a].s = { fill: { fgColor: { rgb } } };
+                }
+            });
+        }
+        const wb = XLib.utils.book_new();
+        XLib.utils.book_append_sheet(wb, ws, 'Competencia');
+        XLib.writeFile(wb, `Competencia_ML_${hoy()}.xlsx`);
+    });
+})();

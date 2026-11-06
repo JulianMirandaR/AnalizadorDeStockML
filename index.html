@@ -47,9 +47,9 @@
                 <i class="fa-solid fa-clipboard-check"></i>
                 <span>Auditoría Stock</span>
             </button>
-            <button class="tab-btn" data-tab="rentabilidad">
-                <i class="fa-solid fa-chart-line"></i>
-                <span>Rentabilidad</span>
+            <button class="tab-btn" data-tab="competencia">
+                <i class="fa-solid fa-scale-balanced"></i>
+                <span>Competencia ML</span>
             </button>
             <button class="tab-btn" data-tab="restock-full">
                 <i class="fa-solid fa-truck-fast"></i>
@@ -179,89 +179,6 @@
                     </table>
                 </div>
             </section>
-        </div>
-
-        <div id="tab-rentabilidad" class="tab-content">
-            <header class="header">
-                <div class="brand">
-                    <i class="fa-solid fa-money-bill-trend-up"></i>
-                    <h1>Análisis de Rentabilidad</h1>
-                </div>
-                <p>Compara listas de precios contra ventas en Mercado Libre</p>
-            </header>
-            
-            <section class="upload-section">
-                <div class="upload-card" id="drop-zone-guerrini">
-                    <div class="card-icon">
-                        <i class="fa-solid fa-file-invoice-dollar"></i>
-                    </div>
-                    <h3>Lista de Precios Guerrini</h3>
-                    <p>Arrastra tu Excel aquí o haz clic para subir.</p>
-                    <input type="file" id="file-guerrini" accept=".xlsx, .xls, .csv" hidden>
-                    <div class="file-status" id="status-guerrini">Sin archivo</div>
-                </div>
-
-                <div class="upload-card" id="drop-zone-ventas">
-                    <div class="card-icon">
-                        <i class="fa-solid fa-cash-register"></i>
-                    </div>
-                    <h3>Ventas Mercado Libre</h3>
-                    <p>Arrastra tu Excel aquí o haz clic para subir.</p>
-                    <input type="file" id="file-ventas" accept=".xlsx, .xls, .csv" hidden>
-                    <div class="file-status" id="status-ventas">Sin archivo</div>
-                </div>
-            </section>
-
-            <section class="actions-section">
-                <button id="btn-process-rentabilidad" class="btn-primary" disabled>
-                    <i class="fa-solid fa-bolt"></i> Analizar Rentabilidad
-                </button>
-            </section>
-
-            <section class="results-section hidden" id="results-panel-rentabilidad">
-                <div class="results-header">
-                    <h2><i class="fa-solid fa-chart-pie"></i> Resultados del Análisis de Rentabilidad</h2>
-                    <button id="btn-download-rentabilidad" class="btn-secondary">
-                        <i class="fa-solid fa-download"></i>
-                        Descargar Reporte
-                    </button>
-                </div>
-                
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <i class="fa-solid fa-arrow-trend-up text-success"></i>
-                        <div class="stat-info">
-                            <span class="stat-value" id="stat-ganancia">0</span>
-                            <span class="stat-label">Ventas con Ganancia</span>
-                        </div>
-                    </div>
-                    <div class="stat-card">
-                        <i class="fa-solid fa-arrow-trend-down text-danger"></i>
-                        <div class="stat-info">
-                            <span class="stat-value" id="stat-perdida">0</span>
-                            <span class="stat-label">Ventas con Pérdida</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="table-container">
-                    <table id="results-table-rentabilidad">
-                        <thead>
-                            <tr>
-                                <th>Fecha</th>
-                                <th>SKU</th>
-                                <th>Detalle del Producto</th>
-                                <th>Costo Unitario</th>
-                                <th>Precio Venta</th>
-                                <th>Cant. Vendida</th>
-                                <th>Resultado Total</th>
-                                <th>Estado</th>
-                            </tr>
-                        </thead>
-                        <tbody id="results-body-rentabilidad">
-                        </tbody>
-                    </table>
-                </div>
         </div>
 
         <div id="tab-restock-full" class="tab-content">
@@ -563,6 +480,164 @@
                         </thead>
                         <tbody id="results-body-precios">
                         </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+
+        <!-- TAB COMPETENCIA ML -->
+        <div id="tab-competencia" class="tab-content">
+            <header class="header">
+                <div class="brand">
+                    <i class="fa-solid fa-scale-balanced"></i>
+                    <h1>Competencia en Mercado Libre</h1>
+                </div>
+                <p>Compará nuestro precio contra los competidores de cada neumático y detectá dónde podemos bajar sin perder margen</p>
+            </header>
+
+            <section class="instructions-section">
+                <div class="instructions-card">
+                    <h2><i class="fa-solid fa-circle-info"></i> ¿Cómo funciona?</h2>
+                    <ul class="steps-list">
+                        <li><span class="step-num">1</span> Subí el <strong>Excel de Publicaciones de ML</strong> (el de Modificar publicaciones, con columnas Precio y Precio en promoción). Por cada SKU se toma la publicación <strong>más barata</strong> (si tiene promo, el precio promo).</li>
+                        <li><span class="step-num">2</span> Subí el <strong>Stock del Sistema</strong> (stock_todo) para tener el <strong>costo</strong> de cada SKU.</li>
+                        <li><span class="step-num">3</span> En cada fila, cargá los <strong>links o MLA de los competidores</strong> con su precio. Quedan guardados en este navegador (podés exportarlos e importarlos en Excel).</li>
+                        <li><span class="step-num">4</span> El sistema calcula lo que recibimos (precio − comisión ML) y te dice si <strong>podemos bajar para ganarle</strong> sin quedar debajo del margen mínimo.</li>
+                    </ul>
+                </div>
+            </section>
+
+            <section class="upload-section">
+                <div class="upload-card" id="drop-zone-comp-pub">
+                    <div class="card-icon">
+                        <img src="https://logodownload.org/wp-content/uploads/2018/10/mercado-libre-logo.png" alt="Mercado Libre Logo" class="ml-logo">
+                    </div>
+                    <h3>Publicaciones de ML <span style="color: var(--danger, #ef4444);">*</span></h3>
+                    <p>Excel con Precio y Precio en promoción.</p>
+                    <input type="file" id="file-comp-pub" accept=".xlsx, .xls" hidden>
+                    <div class="file-status" id="status-comp-pub">Sin archivo</div>
+                </div>
+
+                <div class="upload-card" id="drop-zone-comp-stock">
+                    <div class="card-icon">
+                        <i class="fa-solid fa-server"></i>
+                    </div>
+                    <h3>Stock del Sistema <span style="color: var(--danger, #ef4444);">*</span></h3>
+                    <p>stock_todo con el costo de cada SKU.</p>
+                    <input type="file" id="file-comp-stock" accept=".xlsx, .xls" hidden>
+                    <div class="file-status" id="status-comp-stock">Sin archivo</div>
+                </div>
+            </section>
+
+            <section class="config-section comp-config">
+                <div class="comp-field" title="Lo que se lleva ML entre comisión y cargos. Ej: vendés a $100.000 y recibís $70.000 = 30%.">
+                    <label for="comp-comision">Comisión + cargos ML (%):</label>
+                    <input type="number" id="comp-comision" value="30" min="0" max="90" step="0.5">
+                </div>
+                <div class="comp-field" title="Ganancia mínima sobre el costo c/IVA que aceptás al bajar el precio.">
+                    <label for="comp-margen-min">Margen mínimo sobre costo (%):</label>
+                    <input type="number" id="comp-margen-min" value="10" min="0" step="0.5">
+                </div>
+                <div class="comp-field" title="Cuánto por debajo del competidor más barato querés quedar.">
+                    <label for="comp-diferencia">Quedar debajo del rival por ($):</label>
+                    <input type="number" id="comp-diferencia" value="1000" min="0" step="100">
+                </div>
+                <label class="comp-check">
+                    <input type="checkbox" id="comp-iva" checked>
+                    El costo del stock es s/IVA (sumar 21%)
+                </label>
+            </section>
+
+            <section class="actions-section">
+                <button id="btn-process-comp" class="btn-primary" disabled>
+                    <i class="fa-solid fa-scale-balanced"></i> Comparar con la competencia
+                </button>
+            </section>
+
+            <section class="results-section hidden" id="results-panel-comp">
+                <div class="results-header">
+                    <h2><i class="fa-solid fa-scale-balanced"></i> Nuestro precio vs. competencia</h2>
+                    <div class="results-actions">
+                        <button id="btn-comp-import" class="btn-secondary" title="Cargar competidores desde un Excel (SKU, Link o MLA, Vendedor, Precio)">
+                            <i class="fa-solid fa-file-import"></i> Importar competidores
+                        </button>
+                        <input type="file" id="file-comp-import" accept=".xlsx, .xls" hidden>
+                        <button id="btn-comp-export" class="btn-secondary" title="Respaldo de todos los competidores cargados">
+                            <i class="fa-solid fa-file-export"></i> Exportar competidores
+                        </button>
+                        <button id="btn-download-comp" class="btn-secondary">
+                            <i class="fa-solid fa-download"></i> Descargar análisis
+                        </button>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <i class="fa-solid fa-users text-info"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-comp-con">0</span>
+                            <span class="stat-label">SKU con competidores cargados</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-arrow-trend-down text-success"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-comp-bajar">0</span>
+                            <span class="stat-label">Nos ganan y PODEMOS bajar</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-ban text-danger"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-comp-no">0</span>
+                            <span class="stat-label">Nos ganan y NO conviene bajar</span>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <i class="fa-solid fa-trophy text-warning"></i>
+                        <div class="stat-info">
+                            <span class="stat-value" id="stat-comp-ganamos">0</span>
+                            <span class="stat-label">Ya somos los más baratos</span>
+                        </div>
+                    </div>
+                </div>
+
+                <section class="config-section comp-filters">
+                    <input type="text" id="comp-buscar" placeholder="🔎 Buscar SKU, MLA o descripción...">
+                    <label>
+                        Ver:
+                        <select id="comp-vista">
+                            <option value="todos" selected>Todos</option>
+                            <option value="con">Solo con competidores</option>
+                            <option value="bajar">Podemos bajar</option>
+                            <option value="no">No conviene bajar</option>
+                            <option value="ganamos">Ya ganamos</option>
+                            <option value="sin">Sin competidores cargados</option>
+                        </select>
+                    </label>
+                    <label class="comp-check">
+                        <input type="checkbox" id="comp-solo-stock" checked>
+                        Solo con stock
+                    </label>
+                </section>
+
+                <div class="table-container">
+                    <table id="results-table-comp" class="comp-table">
+                        <thead>
+                            <tr>
+                                <th>SKU</th>
+                                <th>Producto</th>
+                                <th style="text-align:center;">Stock</th>
+                                <th style="text-align:right;">Costo c/IVA</th>
+                                <th style="text-align:right;">Nuestro precio</th>
+                                <th style="text-align:right;">Recibimos</th>
+                                <th style="text-align:right;">Margen</th>
+                                <th>Competidores</th>
+                                <th style="text-align:right;">Precio piso</th>
+                                <th>Sugerencia</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-body-comp"></tbody>
                     </table>
                 </div>
             </section>

@@ -784,3 +784,4 @@ tbody tr:hover {
 .comp-row.comp-lista td:first-child { box-shadow: inset 6px 0 0 #16a34a; }
 .comp-row.comp-lista td:not(.comp-tick) { opacity: 0.8; }
 .comp-lista-badge { display: inline-block; margin-bottom: 0.35rem; margin-right: 0.3rem; background: #16a34a !important; color: #fff !important; border-color: #16a34a !important; }
+.comp-ml-acciones [hidden] { display: none !important; }

@@ -3357,8 +3357,13 @@ btnDownloadRestock.addEventListener('click', () => {
         pubs = [];
         crudas.forEach(p => {
             const m = emparejar(p.title, indice, preferidos);
-            if (m.sku) pubs.push({ ...p, sku: m.sku, baseSku: m.sku });
-            else sinEmparejar.push({ ...p, motivo: m.motivo });
+            if (m.sku) { pubs.push({ ...p, sku: m.sku, baseSku: m.sku }); return; }
+            sinEmparejar.push({ ...p, motivo: m.motivo });
+            // Si es un neumático, igual entra en la tabla (sin costo) para poder buscarle competidores
+            const k = claveMedida(p.title);
+            if (!k) return;
+            const clave = `S/SKU ${k} ${[...modelos(p.title)].sort().join(' ')}`.trim();
+            pubs.push({ ...p, sku: clave, baseSku: clave, sinSku: true });
         });
     }
 
@@ -3520,7 +3525,9 @@ btnDownloadRestock.addEventListener('click', () => {
         if (viejos.length) msgs.push('<i class="fa-solid fa-clock-rotate-left"></i><span>' + viejos.map(x => `${x.txt} es de hace ${x.d} días`).join(' y ') +
             '. Subí el archivo actualizado arriba para que los cálculos estén al día.</span>');
         if (cuenta === 'secundaria' && sinEmparejar.length) msgs.push(`<i class="fa-solid fa-link-slash"></i><span>${sinEmparejar.length} ` +
-            `${sinEmparejar.length === 1 ? 'publicación no se pudo asociar' : 'publicaciones no se pudieron asociar'} a un SKU del stock (por medida, marca y modelo). ` +
+            `${sinEmparejar.length === 1 ? 'publicación no se pudo asociar' : 'publicaciones no se pudieron asociar'} a un SKU del stock (por medida, marca y modelo): ` +
+            `se muestran como <b>Sin SKU</b> y sin costo, pero se les buscan competidores igual. ` +
+            (costos && Object.keys(costos).length < 100 ? `<b>Ojo: el stock cargado tiene solo ${Object.keys(costos).length} productos</b>; subí el stock_todo completo. ` : '') +
             `<a href="#" id="comp-ver-sin-sku">Ver cuáles</a></span>`);
         el.hidden = !msgs.length;
         el.innerHTML = msgs.map(m => `<div class="comp-aviso-linea">${m}</div>`).join('');
@@ -3602,6 +3609,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 stock: Math.max(...ps.map(p => p.stock)) + Math.max(...ps.map(p => p.full)),
                 costoBase: info ? info.costo : null,
                 // Las ventas de costos_ml.js son de la cuenta principal
+                sinSku: !!mejor.sinSku,
                 ventas: cuenta === 'principal' ? ((CML.ventasPorSku || {})[sku] || 0) : null
             };
         });
@@ -3746,8 +3754,10 @@ btnDownloadRestock.addEventListener('click', () => {
             return `<tr class="comp-row comp-${ev.estado} ${color}${lista ? ' comp-lista' : ''}">
                 <td class="comp-tick"><label title="${lista ? `Marcada como lista el ${esc(fmtFecha(lista.fecha))}${lista.precio ? ' (precio en ese momento: ' + fmt$(lista.precio) + ')' : ''}. Destildá para volver a pendiente` : 'Marcar como lista (ya revisada / ajustada)'}">
                     <input type="checkbox" data-act="lista" data-sku="${esc(it.sku)}"${lista ? ' checked' : ''}></label></td>
-                <td style="white-space:nowrap;"><span class="sku-cell"><strong>${esc(it.sku)}</strong>
-                    <button type="button" class="copy-sku-btn" data-act="copy" data-sku="${esc(it.sku)}" title="Copiar SKU" aria-label="Copiar SKU"><i class="fa-regular fa-copy"></i></button></span></td>
+                <td style="white-space:nowrap;">${it.sinSku
+                    ? `<span class="comp-muted" title="No se encontró el SKU en el stock del sistema: sin costo no se puede calcular el margen">Sin SKU</span>`
+                    : `<span class="sku-cell"><strong>${esc(it.sku)}</strong>
+                    <button type="button" class="copy-sku-btn" data-act="copy" data-sku="${esc(it.sku)}" title="Copiar SKU" aria-label="Copiar SKU"><i class="fa-regular fa-copy"></i></button></span>`}</td>
                 <td class="comp-prod">${esc(it.desc)}<div class="comp-sub">${it.nPubs} ${it.nPubs === 1 ? 'publicación' : 'publicaciones'}</div></td>
                 <td style="text-align:center;">${it.stock}${it.ventas != null ? `<div class="comp-sub" title="Neumáticos vendidos en Mercado Libre (cuenta principal) en los últimos ${CML.dias || 90} días">${it.ventas} vend.</div>` : ''}</td>
                 <td style="text-align:right;">${fmt$(ev.costo)}</td>
@@ -3992,7 +4002,9 @@ btnDownloadRestock.addEventListener('click', () => {
                 const r = await fetch('/api/ml/competidores', {
                     method: 'POST', credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ skus: lote.map(it => ({ sku: it.sku, mlas: [...it.mlas, ...(mlasPrincipal[it.sku] || [])] })), seguir })
+                    body: JSON.stringify({ skus: lote.map(it => ({ sku: it.sku, mlas: [...it.mlas, ...(mlasPrincipal[it.sku] || [])],
+                        // la cuenta secundaria no se puede leer: el catálogo se busca por el título
+                        ...(cuenta !== 'principal' ? { titulo: it.title } : {}) })), seguir })
                 });
                 data = await r.json().catch(() => ({}));
                 if (r.status === 401) { abortado = data.error || 'Se perdió la conexión con Mercado Libre.'; break; }

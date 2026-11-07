@@ -59,6 +59,32 @@ async function apodos(ids, token) {
     return mapa;
 }
 
+// Búsqueda en el catálogo por título. Se usa para publicaciones que ML no deja leer
+// (las de nuestra otra cuenta, que no es la conectada): se buscan productos de catálogo con
+// el título y se quedan los que tienen la misma medida y el mismo modelo.
+const sinAcentos = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+function medidaDe(t) {
+    const m = sinAcentos(t).match(/(\d{3})\s*[\/\s]\s*(\d{2})\s*(?:Z?R|-)?\s*(\d{2})(?!\d)/);
+    return m ? m[1] + '/' + m[2] + 'R' + m[3] : null;
+}
+function modelosDe(t) {
+    const w = sinAcentos(t).replace(/[^A-Z0-9]+/g, ' ').split(' ');
+    return new Set(w.filter(x => /^[A-Z]{1,4}\d{1,4}$/.test(x) && !/^(Z?R\d{2}|P\d{3}|LT\d*|X\d+)$/.test(x)));
+}
+async function productosPorTitulo(titulo, token) {
+    const q = sinAcentos(titulo).replace(/\bKIT\s*(X|DE)?\s*\d+\b/g, ' ').replace(/\s+/g, ' ').trim();
+    const r = await ml.mlGet(`/products/search?status=active&site_id=MLA&limit=10&q=${encodeURIComponent(q)}`, token);
+    if (!r.ok || !r.data || !Array.isArray(r.data.results)) return { error: `busqueda_${r.status}` };
+    const md = medidaDe(q), mods = modelosDe(q);
+    const ok = r.data.results.filter(p => {
+        const n = p.name || '';
+        if (md && medidaDe(n) !== md) return false;
+        if (mods.size && ![...modelosDe(n)].some(x => mods.has(x))) return false;
+        return true;
+    });
+    return ok.length ? { ids: ok.slice(0, 3).map(p => p.id) } : { error: r.data.results.length ? 'busqueda_sin_coincidencia' : 'busqueda_vacia' };
+}
+
 // Precio de venta real (con promociones) de una publicación
 async function precioVenta(id, token) {
     const r = await ml.mlGet(`/items/${id}/sale_price?context=channel_marketplace`, token);
@@ -73,8 +99,8 @@ module.exports = async (req, res) => {
     let body;
     try { body = await leerBody(req); } catch (e) { return ml.json(res, 400, { error: 'Body inválido' }); }
     const skus = (Array.isArray(body.skus) ? body.skus : []).slice(0, MAX_SKUS)
-        .map(x => ({ sku: String(x.sku || ''), mlas: [...new Set((x.mlas || []).map(normMla).filter(m => /^MLA\d+$/.test(m)))] }))
-        .filter(x => x.sku && x.mlas.length);
+        .map(x => ({ sku: String(x.sku || ''), mlas: [...new Set((x.mlas || []).map(normMla).filter(m => /^MLA\d+$/.test(m)))], titulo: String(x.titulo || '').slice(0, 150) }))
+        .filter(x => x.sku && (x.mlas.length || x.titulo));
     const seguir = [...new Set((Array.isArray(body.seguir) ? body.seguir : []).map(normMla).filter(m => /^MLA\d+$/.test(m)))].slice(0, 100);
     const token = s.at;
 
@@ -86,8 +112,15 @@ module.exports = async (req, res) => {
         Object.values(propias).forEach(it => it.seller_id && vendedoresPropios.add(String(it.seller_id)));
 
         const catalogoDeSku = {};
+        const errorBusqueda = {};
         skus.forEach(x => {
             catalogoDeSku[x.sku] = [...new Set(x.mlas.map(m => propias[m] && propias[m].catalog_product_id).filter(Boolean))].slice(0, 3);
+        });
+        // Sin catálogo por las publicaciones (p. ej. cuenta secundaria): se busca por el título
+        await ml.mapLimit(skus.filter(x => !catalogoDeSku[x.sku].length && x.titulo), 4, async (x) => {
+            const r = await productosPorTitulo(x.titulo, token);
+            if (r.ids) catalogoDeSku[x.sku] = r.ids;
+            else errorBusqueda[x.sku] = r.error;
         });
 
         // 2) Publicaciones de todos los vendedores en esos productos
@@ -104,7 +137,7 @@ module.exports = async (req, res) => {
         skus.forEach(x => {
             const cats = catalogoDeSku[x.sku];
             if (!cats.length) {
-                resultados[x.sku] = { catalogo: [], competidores: [], motivo: Object.keys(propias).some(m => x.mlas.includes(m)) ? 'sin_catalogo' : 'no_encontrada' };
+                resultados[x.sku] = { catalogo: [], competidores: [], motivo: errorBusqueda[x.sku] || (Object.keys(propias).some(m => x.mlas.includes(m)) ? 'sin_catalogo' : 'no_encontrada') };
                 return;
             }
             const vistos = new Set();

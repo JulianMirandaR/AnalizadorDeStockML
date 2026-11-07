@@ -71,7 +71,20 @@ function modelosDe(t) {
     const w = sinAcentos(t).replace(/[^A-Z0-9]+/g, ' ').split(' ');
     return new Set(w.filter(x => /^[A-Z]{1,4}\d{1,4}$/.test(x) && !/^(Z?R\d{2}|P\d{3}|LT\d*|X\d+)$/.test(x)));
 }
+// Primero con el título; si no aparece, con una búsqueda corta: marca + modelo + medida
+const RELLENO = new Set(['NEUMATICO', 'NEUMATICOS', 'CUBIERTA', 'CUBIERTAS', 'LLANTA', 'NUEVO', 'AUTO', 'CAMIONETA', 'UTILITARIO',
+    'SEGURIDAD', 'MAYOR', 'MAXIMO', 'RENDIMIENTO', 'DEPORTIVO', 'INDICE', 'VELOCIDAD', 'PARA', 'CARGA', 'KIT']);
 async function productosPorTitulo(titulo, token) {
+    const r1 = await productosPorConsulta(titulo, token);
+    if (r1.ids) return r1;
+    const md = medidaDe(titulo);
+    if (!md) return r1;
+    const marca = sinAcentos(titulo).replace(/[^A-Z]+/g, ' ').split(' ').filter(w => w.length >= 4 && !RELLENO.has(w));
+    const corta = [...marca.slice(0, 2), ...modelosDe(titulo), md].join(' ');
+    const r2 = await productosPorConsulta(corta, token);
+    return r2.ids ? r2 : r1;
+}
+async function productosPorConsulta(titulo, token) {
     const q = sinAcentos(titulo).replace(/\bKIT\s*(X|DE)?\s*\d+\b/g, ' ').replace(/\s+/g, ' ').trim();
     const r = await ml.mlGet(`/products/search?status=active&site_id=MLA&limit=10&q=${encodeURIComponent(q)}`, token);
     if (!r.ok || !r.data || !Array.isArray(r.data.results)) return { error: `busqueda_${r.status}` };

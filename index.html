@@ -507,13 +507,22 @@
                 </div>
             </section>
 
+            <section class="comp-cuentas">
+                <span class="comp-cuentas-label"><i class="fa-solid fa-store"></i> Cuenta de Mercado Libre:</span>
+                <div class="comp-seg" id="comp-cuenta" role="group" aria-label="Cuenta de Mercado Libre">
+                    <button type="button" data-cuenta="principal" class="active">Principal <small>NEUMÁTICOS NUEVOS</small></button>
+                    <button type="button" data-cuenta="secundaria">Secundaria <small>JUAN CARLOS MARGARIA</small></button>
+                </div>
+                <p class="comp-cuentas-ayuda">Cada cuenta guarda su propio Excel de publicaciones; el stock y los competidores se comparten. Al subir el Excel se detecta solo de qué cuenta es: el de la secundaria no trae SKU y se empareja con el stock por medida, marca y modelo.</p>
+            </section>
+
             <section class="upload-section">
                 <div class="upload-card" id="drop-zone-comp-pub">
                     <div class="card-icon">
                         <img src="https://logodownload.org/wp-content/uploads/2018/10/mercado-libre-logo.png" alt="Mercado Libre Logo" class="ml-logo">
                     </div>
                     <h3>Publicaciones de ML <span style="color: var(--danger, #ef4444);">*</span></h3>
-                    <p>Excel con Precio y Precio en promoción.</p>
+                    <p>Excel con Precio y Precio en promoción.<br><b id="comp-pub-cuenta">Principal · NEUMÁTICOS NUEVOS</b></p>
                     <input type="file" id="file-comp-pub" accept=".xlsx, .xls" hidden>
                     <div class="file-status" id="status-comp-pub">Sin archivo</div>
                 </div>
@@ -537,7 +546,7 @@
 
             <section class="results-section hidden" id="results-panel-comp">
                 <div class="results-header">
-                    <h2><i class="fa-solid fa-scale-balanced"></i> Nuestro precio vs. competencia</h2>
+                    <h2><i class="fa-solid fa-scale-balanced"></i> Nuestro precio vs. competencia <small class="comp-titulo-cuenta" id="comp-titulo-cuenta"></small></h2>
                     <div class="results-actions">
                         <button id="btn-comp-import" class="btn-secondary" title="Cargar competidores desde un Excel (SKU, Link o MLA, Vendedor, Precio)">
                             <i class="fa-solid fa-file-import"></i> Importar competidores
@@ -620,6 +629,8 @@
                             <option value="no">No conviene bajar</option>
                             <option value="ganamos">Ya ganamos</option>
                             <option value="sin">Sin competidores cargados</option>
+                            <option value="pendientes">Pendientes (sin marcar como lista)</option>
+                            <option value="listas">Listas</option>
                         </select>
                     </label>
                     <label title="Prioridad: primero donde podemos bajar; dentro de cada grupo, lo que más se vende y donde más caros estamos frente al rival">
@@ -644,6 +655,7 @@
                     <table id="results-table-comp" class="comp-table">
                         <thead>
                             <tr>
+                                <th style="text-align:center;" title="Tildá las publicaciones que ya revisaste o ajustaste: la fila queda en verde">Lista</th>
                                 <th>SKU</th>
                                 <th>Producto</th>
                                 <th style="text-align:center;">Stock</th>

@@ -3134,8 +3134,18 @@ btnDownloadRestock.addEventListener('click', () => {
     const selOrden = $('comp-orden');
     const chkSoloStock = $('comp-solo-stock');
 
-    let pubs = null;    // [{sku, baseSku, kitN, mla, title, precio, precioLista, stock, full}]
+    let pubs = null;    // [{sku, baseSku, kitN, mla, title, precio, precioLista, stock, full}] de la cuenta elegida
     let costos = null;  // { SKU: {costo, desc} }
+    // Dos cuentas de ML. La principal exporta las publicaciones con SKU; la secundaria no,
+    // así que sus publicaciones se emparejan con el stock por medida, marca y modelo.
+    const CUENTAS = {
+        principal: { nombre: 'Principal', detalle: 'NEUMÁTICOS NUEVOS', tipo: 'pub' },
+        secundaria: { nombre: 'Secundaria', detalle: 'JUAN CARLOS MARGARIA', tipo: 'pub2' }
+    };
+    const CUENTA_KEY = 'competenciaML.cuenta.v1';
+    let cuenta = (() => { try { return CUENTAS[localStorage.getItem(CUENTA_KEY)] ? localStorage.getItem(CUENTA_KEY) : 'principal'; } catch (e) { return 'principal'; } })();
+    const pubsCuenta = { principal: null, secundaria: null };   // tal como se leyeron del Excel
+    let sinEmparejar = [];   // publicaciones de la cuenta secundaria que no se pudieron asociar a un SKU
     // Reglas fijas: ganarle al rival por $1.000 y que el neto (lo que recibimos) quede por encima del costo c/IVA.
     const DIFERENCIA_RIVAL = 1000;
     // Comisión y envío de referencia (costos_ml.js, sacado del reporte Ventas AR)
@@ -3240,6 +3250,118 @@ btnDownloadRestock.addEventListener('click', () => {
         return out;
     }
 
+    // Excel de "Modificar publicaciones" SIN columna SKU (cuenta secundaria). El SKU se
+    // resuelve después contra el stock del sistema (ver emparejar).
+    function parsePublicacionesSinSku(rows) {
+        const h = findHeader(rows, ['ITEM_ID', 'TITLE', 'PRICE']);
+        if (h === -1) throw new Error('No encontré las columnas ITEM_ID, TITLE y PRICE. Bajá el Excel de Modificar publicaciones incluyendo los precios.');
+        const up = rows[h].map(c => String(c).trim().toUpperCase());
+        const c = (name) => up.indexOf(name);
+        const cMla = c('ITEM_ID'), cTitle = c('TITLE'), cPrice = c('PRICE'), cSale = c('SALE_PRICE'), cFull = c('STOCK_FULL');
+        let cStock = up.findIndex(x => x.startsWith('STORE_STOCK_QUANTITY'));
+        if (cStock === -1) cStock = up.findIndex(x => x === 'TOTAL_STOCK_ALL_STORES' || x === 'STOCK_FLEX');
+        const out = [];
+        for (let i = h + 1; i < rows.length; i++) {
+            const r = rows[i];
+            if (!r) continue;
+            const mla = String(r[cMla] || '').trim();
+            if (!/^MLA\d+/i.test(mla)) continue;
+            const lista = toNum(r[cPrice]);
+            const promo = cSale !== -1 ? toNum(r[cSale]) : null;
+            const precio = (promo != null && promo > 0) ? promo : lista;
+            if (precio == null || precio <= 0) continue;
+            const title = String(r[cTitle] || '').trim();
+            const kit = sinAcentos(title).match(/\bKIT\s*(?:X|DE)?\s*(\d+)\b/);
+            out.push({
+                sku: null, mla, title,
+                kitN: kit ? Math.max(parseInt(kit[1], 10), 1) : 1,
+                precio, precioLista: lista, enPromo: promo != null && promo > 0 && promo < lista,
+                stock: cStock !== -1 ? (toNum(r[cStock]) || 0) : 0,
+                full: cFull !== -1 ? (toNum(r[cFull]) || 0) : 0
+            });
+        }
+        if (!out.length) throw new Error('El archivo no tiene publicaciones con precio.');
+        return out;
+    }
+    // Detecta el formato: con columna SKU es la cuenta principal; sin SKU, la secundaria.
+    function parsePublicacionesAuto(rows) {
+        if (findHeader(rows, ['ITEM_ID', 'SKU', 'PRICE']) !== -1) return { cuenta: 'principal', datos: parsePublicaciones(rows) };
+        return { cuenta: 'secundaria', datos: parsePublicacionesSinSku(rows) };
+    }
+
+    // ---------- emparejar título de ML ↔ SKU del stock ----------
+    const sinAcentos = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+    // Clave de medida: 205/55R16, 205/75R16C, 195R15C, 31X10.50R15
+    function claveMedida(txt) {
+        const t = sinAcentos(txt);
+        let m = t.match(/(?:^|[^\d])P?(\d{3})\s*[\/\s]\s*(\d{2})\s*(?:Z?R|-)?\s*(\d{2})(?!\d)\s*(C\b)?/);
+        if (m) return `${m[1]}/${m[2]}R${m[3]}${m[4] ? 'C' : ''}`;
+        m = t.match(/(?:^|[^\d])(\d{3})\s*R\s*(\d{2})\s*C\b/);
+        if (m) return `${m[1]}R${m[2]}C`;
+        m = t.match(/(\d{2})\s*X\s*(\d{1,2}[.,]\d{2})\s*R?\s*(\d{2})/);
+        if (m) return `${m[1]}X${m[2].replace(',', '.')}R${m[3]}`;
+        return null;
+    }
+    // Códigos de modelo: KT6000, MH15, DH03, FM601, AT51, DSU02...
+    function modelos(txt) {
+        const t = sinAcentos(txt).replace(/[^A-Z0-9]+/g, ' ');
+        return new Set(t.split(' ').filter(w => /^[A-Z]{1,4}\d{1,4}$/.test(w) && !/^(Z?R\d{2}|P\d{3}|LT\d*|X\d+)$/.test(w)));
+    }
+    const RUIDO = new Set(['NEUMATICO', 'NEUMATICOS', 'CUBIERTA', 'LLANTA', 'AUTO', 'NUEVO', 'CAMIONETA', 'UTILITARIO', 'SEGURIDAD',
+        'INDICE', 'VELOCIDAD', 'SPORT', 'RENDIMIENTO', 'MAXIMO', 'MAYOR', 'DEPORTIVO']);
+    const palabras = (txt) => new Set(sinAcentos(txt).replace(/[^A-Z]+/g, ' ').split(' ').filter(w => w.length >= 5 && !RUIDO.has(w)));
+    function indiceStock(costosMap) {
+        const porMedida = {};
+        Object.entries(costosMap).forEach(([sku, c]) => {
+            const k = claveMedida(c.desc);
+            if (k) (porMedida[k] = porMedida[k] || []).push({ sku, mods: modelos(c.desc), pals: palabras(c.desc) });
+        });
+        return porMedida;
+    }
+    // → { sku } o { motivo }. Exige misma medida y que coincida el modelo o la marca.
+    function emparejar(titulo, indice, preferidos) {
+        const k = claveMedida(titulo);
+        if (!k) return { motivo: 'No es un neumático o no tiene la medida en el título' };
+        // 205/75R16 y 205/75R16C cuentan como la misma medida (muchos títulos no ponen la C)
+        const base = k.replace(/C$/, '');
+        const cands = [...(indice[base] || []), ...(indice[base + 'C'] || [])];
+        if (!cands.length) return { motivo: `La medida ${k} no está en el stock` };
+        const mods = modelos(titulo), pals = palabras(titulo);
+        const pts = cands.map(c => {
+            const mod = [...c.mods].some(x => mods.has(x));
+            const marca = [...c.pals].filter(x => pals.has(x)).length;
+            const extra = c.pals.size - marca;   // palabras de la descripción que no están en el título
+            return { c, s: (mod ? 2 : 0) + marca - extra * 0.1, mod, marca };
+        }).filter(x => x.mod || x.marca).sort((a, b) => b.s - a.s);
+        if (!pts.length) return { motivo: `Ningún ${k} del stock coincide en marca o modelo` };
+        const empatados = pts.filter(x => Math.abs(x.s - pts[0].s) < 1e-9);
+        let elegido = pts[0];
+        if (empatados.length > 1) {
+            // Mismo producto con dos SKU (p. ej. 33078 y 33078-2021): el que ya está en la cuenta principal, si no el SKU más corto
+            elegido = (preferidos && empatados.find(x => preferidos.has(x.c.sku))) ||
+                empatados.slice().sort((a, b) => a.c.sku.length - b.c.sku.length || a.c.sku.localeCompare(b.c.sku))[0];
+            if (!elegido.mod) return { motivo: `Coincide con varios SKU: ${empatados.map(x => x.c.sku).join(', ')}` };
+        } else if (!elegido.mod && mods.size) return { motivo: `El modelo no coincide con ningún ${k} del stock` };
+        return { sku: elegido.c.sku };
+    }
+
+    // Publicaciones de la cuenta elegida, listas para construir() (la secundaria necesita el stock para tener SKU)
+    function actualizarPubs() {
+        sinEmparejar = [];
+        const crudas = pubsCuenta[cuenta];
+        if (!crudas) { pubs = null; return; }
+        if (cuenta === 'principal') { pubs = crudas; return; }
+        if (!costos) { pubs = null; return; }
+        const indice = indiceStock(costos);
+        const preferidos = new Set((pubsCuenta.principal || []).map(p => p.baseSku));
+        pubs = [];
+        crudas.forEach(p => {
+            const m = emparejar(p.title, indice, preferidos);
+            if (m.sku) pubs.push({ ...p, sku: m.sku, baseSku: m.sku });
+            else sinEmparejar.push({ ...p, motivo: m.motivo });
+        });
+    }
+
     // stock_todo: SKU → costo y descripción
     function parseStockTodo(rows) {
         const h = findHeader(rows, ['SKU', 'COSTO']);
@@ -3281,17 +3403,30 @@ btnDownloadRestock.addEventListener('click', () => {
                 const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
                 const name = type === 'pub' && wb.SheetNames.includes('Publicaciones') ? 'Publicaciones' : wb.SheetNames[0];
                 const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' });
-                if (type === 'pub') pubs = parsePublicaciones(rows);
-                else costos = parseStockTodo(rows);
-                guardarDatos(type, file.name);
-                status.textContent = `${file.name} · cargado ahora`;
+                if (type === 'pub') {
+                    // El formato dice de qué cuenta es: con SKU = principal, sin SKU = secundaria
+                    const det = parsePublicacionesAuto(rows);
+                    pubsCuenta[det.cuenta] = det.datos;
+                    guardarDatos(CUENTAS[det.cuenta].tipo, file.name, det.datos);
+                    if (det.cuenta !== cuenta) {
+                        Swal.fire({ toast: true, position: 'top-end', timer: 5000, showConfirmButton: false, icon: 'info',
+                            title: `Es un Excel de la cuenta ${CUENTAS[det.cuenta].nombre.toLowerCase()} (${CUENTAS[det.cuenta].detalle}): lo cargué ahí.` });
+                        setCuenta(det.cuenta, { sinRender: true });
+                    }
+                } else {
+                    costos = parseStockTodo(rows);
+                    guardarDatos('stock', file.name, costos);
+                }
+                actualizarPubs();
+                pintarCuenta();
+                if (type === 'stock') status.textContent = `${file.name} · cargado ahora`;
                 btnProcess.disabled = !(pubs && costos);
-                if (items.length) { construir(); render(); }
+                if (items.length && pubs) { construir(); render(); }
             } catch (err) {
                 console.error(err);
                 status.textContent = 'Error al leer';
                 status.classList.remove('uploaded');
-                if (type === 'pub') pubs = null; else costos = null;
+                if (type === 'stock') costos = null;
                 btnProcess.disabled = true;
                 Swal.fire('Error', err.message || 'No se pudo leer el archivo.', 'error');
             }
@@ -3304,7 +3439,7 @@ btnDownloadRestock.addEventListener('click', () => {
     // La página recuerda los últimos archivos subidos (ya procesados), así no hay que
     // volver a subirlos cada vez. Se reemplazan al subir uno nuevo.
     const DATA_KEY = 'competenciaML.datos.v1';
-    let datosGuardados = {};   // { pub: {nombre, fecha}, stock: {nombre, fecha} }
+    let datosGuardados = {};   // { pub: {nombre, fecha}, pub2: {...}, stock: {nombre, fecha} }  (pub2 = cuenta secundaria)
     const fmtFechaHora = (iso) => {
         if (!iso) return '';
         const d = new Date(iso);
@@ -3312,40 +3447,96 @@ btnDownloadRestock.addEventListener('click', () => {
             d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
     };
     const diasDesde = (iso) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null;
-    function guardarDatos(type, nombre) {
+    function guardarDatos(type, nombre, datos) {
         const meta = { nombre, fecha: new Date().toISOString() };
         datosGuardados[type] = meta;
         try {
             const d = JSON.parse(localStorage.getItem(DATA_KEY) || '{}');
-            d[type] = { ...meta, datos: type === 'pub' ? pubs : costos };
+            d[type] = { ...meta, datos };
             localStorage.setItem(DATA_KEY, JSON.stringify(d));
         } catch (e) { console.warn('No se pudieron guardar los archivos en el navegador', e); }
     }
     function restaurarDatos() {
         try {
             const d = JSON.parse(localStorage.getItem(DATA_KEY) || '{}');
-            [['pub', statusPub], ['stock', statusStock]].forEach(([type, status]) => {
+            ['pub', 'pub2', 'stock'].forEach(type => {
                 if (!d[type] || !d[type].datos) return;
-                if (type === 'pub') pubs = d[type].datos; else costos = d[type].datos;
+                if (type === 'pub') pubsCuenta.principal = d[type].datos;
+                else if (type === 'pub2') pubsCuenta.secundaria = d[type].datos;
+                else costos = d[type].datos;
                 datosGuardados[type] = { nombre: d[type].nombre, fecha: d[type].fecha };
-                status.textContent = `${d[type].nombre} · cargado el ${fmtFechaHora(d[type].fecha)}`;
-                status.classList.add('uploaded');
             });
         } catch (e) { console.warn('No se pudieron leer los archivos guardados', e); }
+        actualizarPubs();
+        pintarCuenta();
+    }
+    // Estado de la tarjeta de publicaciones y del selector según la cuenta elegida
+    function pintarCuenta() {
+        document.querySelectorAll('#comp-cuenta [data-cuenta]').forEach(b => b.classList.toggle('active', b.dataset.cuenta === cuenta));
+        const meta = (t) => datosGuardados[t];
+        const pintar = (status, m) => {
+            status.textContent = m ? `${m.nombre} · cargado el ${fmtFechaHora(m.fecha)}` : 'Sin archivo';
+            status.classList.toggle('uploaded', !!m);
+        };
+        pintar(statusPub, meta(CUENTAS[cuenta].tipo));
+        pintar(statusStock, meta('stock'));
+        const t = $('comp-pub-cuenta');
+        if (t) t.textContent = `${CUENTAS[cuenta].nombre} · ${CUENTAS[cuenta].detalle}`;
+        const h = $('comp-titulo-cuenta');
+        if (h) h.textContent = `Cuenta ${CUENTAS[cuenta].nombre.toLowerCase()} · ${CUENTAS[cuenta].detalle}`;
         btnProcess.disabled = !(pubs && costos);
     }
-    // Aviso si los archivos guardados ya tienen varios días
+    function setCuenta(nueva, opciones = {}) {
+        if (!CUENTAS[nueva]) return;
+        cuenta = nueva;
+        try { localStorage.setItem(CUENTA_KEY, cuenta); } catch (e) { /* sin almacenamiento */ }
+        actualizarPubs();
+        cargarUltima();
+        pintarCuenta();
+        if (opciones.sinRender) return;
+        expandidos.clear();
+        if (pubs && costos) {
+            construir();
+            render();
+            pintarCambios();
+            resultsPanel.classList.remove('hidden');
+            if (mlConectado && items.length && tocaActualizar()) buscarCompetidoresMl({ automatica: true });
+        } else {
+            items = [];
+            resultsPanel.classList.add('hidden');
+        }
+    }
+    document.querySelectorAll('#comp-cuenta [data-cuenta]').forEach(b => b.addEventListener('click', () => {
+        if (mlBuscando) { Swal.fire('Esperá un momento', 'Se están buscando competidores en Mercado Libre. Cambiá de cuenta cuando termine.', 'info'); return; }
+        if (b.dataset.cuenta !== cuenta) setCuenta(b.dataset.cuenta);
+    }));
+    // Avisos: archivos viejos y publicaciones de la cuenta secundaria que no se pudieron asociar a un SKU
     function pintarAvisoDatos() {
         const el = $('comp-aviso-datos');
-        const viejos = [['stock', 'el <b>Stock del Sistema</b> (costos)'], ['pub', 'las <b>Publicaciones</b> (nuestros precios)']]
+        const viejos = [['stock', 'el <b>Stock del Sistema</b> (costos)'], [CUENTAS[cuenta].tipo, 'las <b>Publicaciones</b> (nuestros precios)']]
             .map(([t, txt]) => ({ t, txt, d: diasDesde(datosGuardados[t] && datosGuardados[t].fecha) }))
             .filter(x => x.d != null && x.d >= 2);
-        el.hidden = !viejos.length;
-        el.innerHTML = viejos.length
-            ? '<i class="fa-solid fa-clock-rotate-left"></i><span>' + viejos.map(x => `${x.txt} es de hace ${x.d} días`).join(' y ') +
-              '. Subí el archivo actualizado arriba para que los cálculos estén al día.</span>'
-            : '';
+        const msgs = [];
+        if (viejos.length) msgs.push('<i class="fa-solid fa-clock-rotate-left"></i><span>' + viejos.map(x => `${x.txt} es de hace ${x.d} días`).join(' y ') +
+            '. Subí el archivo actualizado arriba para que los cálculos estén al día.</span>');
+        if (cuenta === 'secundaria' && sinEmparejar.length) msgs.push(`<i class="fa-solid fa-link-slash"></i><span>${sinEmparejar.length} ` +
+            `${sinEmparejar.length === 1 ? 'publicación no se pudo asociar' : 'publicaciones no se pudieron asociar'} a un SKU del stock (por medida, marca y modelo). ` +
+            `<a href="#" id="comp-ver-sin-sku">Ver cuáles</a></span>`);
+        el.hidden = !msgs.length;
+        el.innerHTML = msgs.map(m => `<div class="comp-aviso-linea">${m}</div>`).join('');
     }
+    $('comp-aviso-datos').addEventListener('click', (e) => {
+        if (e.target.id !== 'comp-ver-sin-sku') return;
+        e.preventDefault();
+        const filas = sinEmparejar.slice().sort((a, b) => a.title.localeCompare(b.title)).map(p =>
+            `<tr><td><a href="https://articulo.mercadolibre.com.ar/MLA-${esc(p.mla.replace(/^MLA/i, ''))}" target="_blank" rel="noopener noreferrer">${esc(p.mla)}</a></td>` +
+            `<td>${esc(p.title)}</td><td>${fmt$(p.precio)}</td><td>${esc(p.motivo)}</td></tr>`).join('');
+        Swal.fire({
+            title: 'Publicaciones sin SKU', width: 900, confirmButtonColor: '#3b82f6',
+            html: `<p style="font-size:.9rem;">No entran en la comparación. Si son neumáticos, revisá que la medida y el modelo del título coincidan con la descripción del stock.</p>
+                <div style="max-height:420px; overflow:auto; text-align:left;"><table class="comp-sin-sku"><thead><tr><th>MLA</th><th>Título</th><th>Precio</th><th>Motivo</th></tr></thead><tbody>${filas}</tbody></table></div>`
+        });
+    });
     // ---------- Comisión y envío de referencia ----------
     // Medida "195/55R16" a partir de un título o descripción (acepta 195/55r16, 205 65 R16, 205/45zr17...)
     function medidaDe(txt) {
@@ -3410,7 +3601,8 @@ btnDownloadRestock.addEventListener('click', () => {
                 mlas: ps.map(p => p.mla),
                 stock: Math.max(...ps.map(p => p.stock)) + Math.max(...ps.map(p => p.full)),
                 costoBase: info ? info.costo : null,
-                ventas: (CML.ventasPorSku || {})[sku] || 0
+                // Las ventas de costos_ml.js son de la cuenta principal
+                ventas: cuenta === 'principal' ? ((CML.ventasPorSku || {})[sku] || 0) : null
             };
         });
     }
@@ -3454,12 +3646,12 @@ btnDownloadRestock.addEventListener('click', () => {
     // Cuánto más caros estamos que el competidor más barato (0 si ya somos los más baratos)
     const difPct = ({ it, ev }) => ev.rival && it.precio > ev.rival.precio ? (it.precio - ev.rival.precio) / ev.rival.precio : 0;
     // Impacto: lo que se vende × cuánto nos ganan (sin ventas cuenta como 1 para no quedar en cero)
-    const impacto = (f) => (f.it.ventas + 1) * (difPct(f) || 0.0001) + f.it.stock / 1e6;
+    const impacto = (f) => ((f.it.ventas || 0) + 1) * (difPct(f) || 0.0001) + f.it.stock / 1e6;
     function comparador(orden) {
         const nz = (v) => (v == null ? Infinity : v);
         switch (orden) {
-            case 'dif': return (a, b) => difPct(b) - difPct(a) || b.it.ventas - a.it.ventas;
-            case 'ventas': return (a, b) => b.it.ventas - a.it.ventas || b.it.stock - a.it.stock;
+            case 'dif': return (a, b) => difPct(b) - difPct(a) || (b.it.ventas || 0) - (a.it.ventas || 0);
+            case 'ventas': return (a, b) => (b.it.ventas || 0) - (a.it.ventas || 0) || b.it.stock - a.it.stock;
             case 'stock': return (a, b) => b.it.stock - a.it.stock;
             case 'margen': return (a, b) => nz(a.ev.margenPct) - nz(b.ev.margenPct);
             // Sin costo (ganancia desconocida) quedan al final
@@ -3485,6 +3677,8 @@ btnDownloadRestock.addEventListener('click', () => {
                     case 'bajar': return ev.estado === 'bajar';
                     case 'no': return ev.estado === 'no';
                     case 'ganamos': return ev.estado === 'ganamos';
+                    case 'pendientes': return !esLista(it.sku);
+                    case 'listas': return esLista(it.sku);
                     default: return true;
                 }
             })
@@ -3548,11 +3742,14 @@ btnDownloadRestock.addEventListener('click', () => {
             // Verde: podemos bajar y ganarle. Rojo: para ganarle (o ya hoy) el neto queda debajo del costo.
             const color = ev.estado === 'bajar' ? 'comp-verde'
                 : (ev.estado === 'no' || (ev.margen != null && ev.margen < 0)) ? 'comp-rojo' : '';
-            return `<tr class="comp-row comp-${ev.estado} ${color}">
+            const lista = listaDe(it.sku);
+            return `<tr class="comp-row comp-${ev.estado} ${color}${lista ? ' comp-lista' : ''}">
+                <td class="comp-tick"><label title="${lista ? `Marcada como lista el ${esc(fmtFecha(lista.fecha))}${lista.precio ? ' (precio en ese momento: ' + fmt$(lista.precio) + ')' : ''}. Destildá para volver a pendiente` : 'Marcar como lista (ya revisada / ajustada)'}">
+                    <input type="checkbox" data-act="lista" data-sku="${esc(it.sku)}"${lista ? ' checked' : ''}></label></td>
                 <td style="white-space:nowrap;"><span class="sku-cell"><strong>${esc(it.sku)}</strong>
                     <button type="button" class="copy-sku-btn" data-act="copy" data-sku="${esc(it.sku)}" title="Copiar SKU" aria-label="Copiar SKU"><i class="fa-regular fa-copy"></i></button></span></td>
                 <td class="comp-prod">${esc(it.desc)}<div class="comp-sub">${it.nPubs} ${it.nPubs === 1 ? 'publicación' : 'publicaciones'}</div></td>
-                <td style="text-align:center;">${it.stock}<div class="comp-sub" title="Neumáticos vendidos en Mercado Libre en los últimos ${CML.dias || 90} días">${it.ventas} vend.</div></td>
+                <td style="text-align:center;">${it.stock}${it.ventas != null ? `<div class="comp-sub" title="Neumáticos vendidos en Mercado Libre (cuenta principal) en los últimos ${CML.dias || 90} días">${it.ventas} vend.</div>` : ''}</td>
                 <td style="text-align:right;">${fmt$(ev.costo)}</td>
                 <td style="text-align:right; white-space:nowrap;">
                     <strong>${fmt$(it.precio)}</strong>${it.enPromo ? ' <span class="comp-tag">promo</span>' : ''}${it.esKit ? ' <span class="comp-tag">kit c/u</span>' : ''}
@@ -3563,9 +3760,9 @@ btnDownloadRestock.addEventListener('click', () => {
                 <td style="text-align:right;" class="${mColor}"><strong>${fmt$(ev.margen)}</strong><div class="comp-sub">${fmtPct(ev.margenPct)}</div></td>
                 <td class="comp-cell">${compsHtml(it, ev)}</td>
                 <td style="text-align:right;">${fmt$(ev.piso)}</td>
-                <td class="comp-sug">${sugerenciaHtml(it, ev)}</td>
+                <td class="comp-sug">${lista ? '<span class="status-badge bg-success comp-lista-badge"><i class="fa-solid fa-check"></i> Lista</span>' : ''}${sugerenciaHtml(it, ev)}</td>
             </tr>`;
-        }).join('') || `<tr><td colspan="10" style="text-align:center; color:var(--text-secondary);">No hay filas para este filtro.</td></tr>`;
+        }).join('') || `<tr><td colspan="11" style="text-align:center; color:var(--text-secondary);">No hay filas para este filtro.</td></tr>`;
 
         // Estadísticas sobre todo el universo (respeta "solo con stock")
         const all = items.filter(it => !chkSoloStock.checked || it.stock > 0).map(it => evaluar(it));
@@ -3573,7 +3770,29 @@ btnDownloadRestock.addEventListener('click', () => {
         $('stat-comp-bajar').textContent = all.filter(e => e.estado === 'bajar').length;
         $('stat-comp-no').textContent = all.filter(e => e.estado === 'no').length;
         $('stat-comp-ganamos').textContent = all.filter(e => e.estado === 'ganamos').length;
+        const nListas = items.filter(it => (!chkSoloStock.checked || it.stock > 0) && esLista(it.sku)).length;
+        const optListas = selVista.querySelector('option[value="listas"]');
+        if (optListas) optListas.textContent = `Listas (${nListas})`;
     }
+
+    // ---------- publicaciones marcadas como "lista" (por cuenta) ----------
+    const LISTAS_KEY = 'competenciaML.listas.v1';
+    let listas = (() => { try { return JSON.parse(localStorage.getItem(LISTAS_KEY)) || {}; } catch (e) { return {}; } })();
+    const listaDe = (sku) => (listas[cuenta] || {})[sku] || null;
+    const esLista = (sku) => !!listaDe(sku);
+    function marcarLista(sku, marcada) {
+        const l = listas[cuenta] || (listas[cuenta] = {});
+        if (marcada) {
+            const it = items.find(x => x.sku === sku);
+            l[sku] = { fecha: hoy(), precio: it ? Math.round(it.precio) : null };
+        } else delete l[sku];
+        try { localStorage.setItem(LISTAS_KEY, JSON.stringify(listas)); } catch (e) { /* sin almacenamiento */ }
+        render();
+    }
+    tbody.addEventListener('change', (e) => {
+        const chk = e.target.closest('input[data-act="lista"]');
+        if (chk) marcarLista(chk.dataset.sku, chk.checked);
+    });
 
     // ---------- alta / edición de competidores ----------
     async function editarComp(sku, comp) {
@@ -3718,8 +3937,13 @@ btnDownloadRestock.addEventListener('click', () => {
 
     const TAMANO_LOTE = 10;
     // Última actualización de precios y lo que cambió en ella
-    const ULTIMA_KEY = 'competenciaML.ultima.v1';
-    let ultima = (() => { try { return JSON.parse(localStorage.getItem(ULTIMA_KEY)) || null; } catch (e) { return null; } })();
+    // (una por cuenta: cada cuenta tiene sus propios SKU)
+    const ultimaKey = () => cuenta === 'principal' ? 'competenciaML.ultima.v1' : 'competenciaML.ultima.sec.v1';
+    let ultima = null;
+    function cargarUltima() {
+        try { ultima = JSON.parse(localStorage.getItem(ultimaKey())) || null; } catch (e) { ultima = null; }
+    }
+    cargarUltima();
     const HORAS_ACTUALIZACION = 20;   // "una vez por día"
     const tocaActualizar = () => !ultima || !ultima.fecha || (Date.now() - new Date(ultima.fecha).getTime()) > HORAS_ACTUALIZACION * 3600000;
 
@@ -3747,6 +3971,10 @@ btnDownloadRestock.addEventListener('click', () => {
         const lista = items.filter(it => !chkSoloStock.checked || it.stock > 0);
         const lotes = [];
         for (let i = 0; i < lista.length; i += TAMANO_LOTE) lotes.push(lista.slice(i, i + TAMANO_LOTE));
+        // Cuenta secundaria: ML solo deja leer publicaciones de la cuenta conectada (la principal),
+        // así que el producto de catálogo se busca con las publicaciones principales del mismo SKU.
+        const mlasPrincipal = {};
+        if (cuenta !== 'principal') (pubsCuenta.principal || []).forEach(p => (mlasPrincipal[p.baseSku] = mlasPrincipal[p.baseSku] || []).push(p.mla));
 
         mlBuscando = true;
         btnMlBuscar.disabled = true;
@@ -3764,7 +3992,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 const r = await fetch('/api/ml/competidores', {
                     method: 'POST', credentials: 'same-origin',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ skus: lote.map(it => ({ sku: it.sku, mlas: it.mlas })), seguir })
+                    body: JSON.stringify({ skus: lote.map(it => ({ sku: it.sku, mlas: [...it.mlas, ...(mlasPrincipal[it.sku] || [])] })), seguir })
                 });
                 data = await r.json().catch(() => ({}));
                 if (r.status === 401) { abortado = data.error || 'Se perdió la conexión con Mercado Libre.'; break; }
@@ -3776,7 +4004,7 @@ btnDownloadRestock.addEventListener('click', () => {
                 continue;
             }
             aplicarResultadosMl(lote, data, resumen);
-            await traerCostosML(lote);
+            if (cuenta === 'principal') await traerCostosML(lote);
             hechos += lote.length;
             saveStore();
             render();
@@ -3789,7 +4017,7 @@ btnDownloadRestock.addEventListener('click', () => {
         if (abortado) { Swal.fire('Búsqueda interrumpida', abortado, 'warning'); return; }
         if (resumen.errores < lista.length) {
             ultima = { fecha: new Date().toISOString(), cambios: resumen.cambios, anterior: ultima ? ultima.fecha : null };
-            try { localStorage.setItem(ULTIMA_KEY, JSON.stringify(ultima)); } catch (e) { /* sin almacenamiento */ }
+            try { localStorage.setItem(ultimaKey(), JSON.stringify(ultima)); } catch (e) { /* sin almacenamiento */ }
             pintarCambios();
             consultarEstadoMl();
         }
@@ -4051,7 +4279,7 @@ btnDownloadRestock.addEventListener('click', () => {
 
         // ---- Hoja "Por SKU" ----
         const colSku = [
-            { titulo: 'Estado', ancho: 20 }, { titulo: 'SKU', ancho: 16 }, { titulo: 'Producto', ancho: 42 },
+            { titulo: 'Estado', ancho: 20 }, { titulo: 'Lista', ancho: 7 }, { titulo: 'SKU', ancho: 16 }, { titulo: 'Producto', ancho: 42 },
             { titulo: 'Stock', ancho: 7 }, { titulo: 'Vendidos 90 días', ancho: 9 }, { titulo: 'Costo c/IVA', ancho: 13, fmt: MONEDA },
             { titulo: 'Nuestro precio', ancho: 14, fmt: MONEDA }, { titulo: 'Nuestra publicación', ancho: 17 },
             { titulo: 'Comisión ML', ancho: 11, fmt: PCT }, { titulo: 'Envío por unidad', ancho: 13, fmt: MONEDA },
@@ -4070,7 +4298,7 @@ btnDownloadRestock.addEventListener('click', () => {
             const posicion = conPrecio.length ? `${conPrecio.filter(c => c.precio < it.precio).length + 1} de ${conPrecio.length + 1}` : '';
             const baja = ev.estado === 'bajar';
             return [
-                { v: ESTADO[ev.estado] || '', bold: true }, it.sku, it.desc, it.stock, it.ventas, r0(ev.costo),
+                { v: ESTADO[ev.estado] || '', bold: true }, esLista(it.sku) ? 'Sí' : '', it.sku, it.desc, it.stock, it.ventas, r0(ev.costo),
                 r0(it.precio), { v: it.mla, link: urlMla(it.mla) },
                 ev.com, r0(ev.envio), r0(ev.recibimos), r0(ev.margen), ev.margenPct,
                 ev.comps.length, posicion,
@@ -4108,10 +4336,10 @@ btnDownloadRestock.addEventListener('click', () => {
         const wsComp = hoja(colComp, datosComp, coloresComp);
 
         // ---- Hoja "Resumen" ----
-        const cuenta = (e) => filas.filter(f => f.ev.estado === e).length;
+        const contar = (e) => filas.filter(f => f.ev.estado === e).length;
         const bajar = filas.filter(f => f.ev.estado === 'bajar');
         const resumen = [
-            ['Competencia en Mercado Libre'],
+            [`Competencia en Mercado Libre · cuenta ${CUENTAS[cuenta].nombre.toLowerCase()} (${CUENTAS[cuenta].detalle})`],
             [`Generado el ${new Date().toLocaleString('es-AR')}`],
             [`Filtro aplicado: ${selVista.options[selVista.selectedIndex].text}${chkSoloStock.checked ? ' · solo con stock' : ''}${inBuscar.value.trim() ? ` · búsqueda "${inBuscar.value.trim()}"` : ''}`],
             [],
@@ -4120,10 +4348,10 @@ btnDownloadRestock.addEventListener('click', () => {
             ['SKU con competidores', filas.filter(f => f.ev.comps.length).length],
             ['Competidores en total', datosComp.length],
             ['Nos ganan y PODEMOS bajar', bajar.length],
-            ['Nos ganan y NO conviene bajar', cuenta('no')],
-            ['Ya somos los más baratos', cuenta('ganamos')],
+            ['Nos ganan y NO conviene bajar', contar('no')],
+            ['Ya somos los más baratos', contar('ganamos')],
             ['Hoy vendemos debajo del costo', filas.filter(f => f.ev.margen != null && f.ev.margen < 0).length],
-            ['Sin competidores cargados', cuenta('sin')],
+            ['Sin competidores cargados', contar('sin')],
             [],
             ['Cómo se calcula'],
             ['Recibimos = precio × (1 − comisión ML) − envío por unidad. Comisión y envío reales de nuestras ventas; si no hubo ventas, aproximados por medida/rodado.'],
@@ -4149,7 +4377,7 @@ btnDownloadRestock.addEventListener('click', () => {
         XLib.utils.book_append_sheet(wb, wsRes, 'Resumen');
         XLib.utils.book_append_sheet(wb, wsSku, 'Por SKU');
         XLib.utils.book_append_sheet(wb, wsComp, 'Competidores');
-        XLib.writeFile(wb, `Competencia_ML_${hoy()}.xlsx`);
+        XLib.writeFile(wb, `Competencia_ML_${cuenta === 'principal' ? '' : 'secundaria_'}${hoy()}.xlsx`);
     });
     // ---------- arranque ----------
     // Con archivos guardados se arma la tabla sola; si ML está conectado y pasó un día

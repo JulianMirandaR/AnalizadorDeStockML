@@ -751,3 +751,36 @@ tbody tr:hover {
 .comp-baja { color: var(--danger); font-size: 0.7rem; flex-shrink: 0; }
 .comp-sube { color: var(--success); font-size: 0.7rem; flex-shrink: 0; }
 #comp-orden, #comp-vista { padding: 0.5rem; border-radius: 8px; }
+
+/* Competencia ML: selector de cuenta (principal / secundaria) */
+.comp-cuentas {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem;
+    margin: 0 0 1.25rem; padding: 0.9rem 1.2rem; border-radius: 12px;
+    border: 1px solid var(--border-color); background: rgba(255,255,255,0.03);
+}
+.comp-cuentas-label { font-weight: 600; color: var(--text-primary); }
+.comp-seg { display: inline-flex; border: 1px solid var(--border-color); border-radius: 10px; overflow: hidden; }
+.comp-seg button {
+    font-family: inherit; cursor: pointer; border: none; background: transparent; color: var(--text-secondary);
+    padding: 0.5rem 1rem; font-size: 0.9rem; font-weight: 600; display: flex; flex-direction: column; align-items: center; line-height: 1.2;
+}
+.comp-seg button + button { border-left: 1px solid var(--border-color); }
+.comp-seg button small { font-size: 0.68rem; font-weight: 500; opacity: 0.8; }
+.comp-seg button:hover { background: rgba(59,130,246,0.08); color: var(--text-primary); }
+.comp-seg button.active { background: var(--accent); color: #fff; }
+.comp-cuentas-ayuda { flex-basis: 100%; margin: 0; font-size: 0.8rem; color: var(--text-secondary); }
+.comp-titulo-cuenta { font-size: 0.8rem; font-weight: 500; color: var(--text-secondary); margin-left: 0.4rem; }
+.comp-aviso { flex-direction: column; align-items: stretch; }
+.comp-aviso-linea { display: flex; align-items: center; gap: 0.6rem; }
+.comp-aviso a { color: var(--info); }
+.comp-sin-sku { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.comp-sin-sku th, .comp-sin-sku td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+
+/* Competencia ML: publicaciones marcadas como "lista" (tiene prioridad sobre verde/rojo) */
+.comp-table td.comp-tick { text-align: center; vertical-align: middle; width: 48px; }
+.comp-tick label { display: inline-flex; padding: 0.3rem; cursor: pointer; }
+.comp-tick input { width: 20px; height: 20px; cursor: pointer; accent-color: #16a34a; }
+.comp-row.comp-lista, .comp-row.comp-lista:hover { background: rgba(22,163,74,0.32); }
+.comp-row.comp-lista td:first-child { box-shadow: inset 6px 0 0 #16a34a; }
+.comp-row.comp-lista td:not(.comp-tick) { opacity: 0.8; }
+.comp-lista-badge { display: inline-block; margin-bottom: 0.35rem; margin-right: 0.3rem; background: #16a34a !important; color: #fff !important; border-color: #16a34a !important; }

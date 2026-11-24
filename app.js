@@ -3995,7 +3995,7 @@ btnDownloadRestock.addEventListener('click', () => {
         mlBuscando = true;
         btnMlBuscar.disabled = true;
         mlProg.hidden = false;
-        const resumen = { conComp: 0, nuevos: 0, sinCatalogo: [], sinComp: 0, actualizados: 0, errores: 0, cambios: [], hayAnterior: !!(ultima && ultima.fecha), noActualizables: 0 };
+        const resumen = { conComp: 0, nuevos: 0, sinCatalogo: [], sinComp: 0, actualizados: 0, errores: 0, cambios: [], hayAnterior: !!(ultima && ultima.fecha), noActualizables: 0, motivos: {} };
         let hechos = 0;
         let abortado = null;
         for (const lote of lotes) {
@@ -4039,6 +4039,8 @@ btnDownloadRestock.addEventListener('click', () => {
             pintarCambios();
             consultarEstadoMl();
         }
+        // Ningún SKU con competidores: algo anda mal con ML. Se muestra qué respondió en cada paso.
+        if (!resumen.conComp && lista.length - resumen.errores > 0) { mostrarDiagnostico(lista[0], resumen); return; }
         if (automatica) {
             const c = resumen.cambios;
             const n = (t) => c.filter(x => x.tipo === t).length;
@@ -4058,6 +4060,26 @@ btnDownloadRestock.addEventListener('click', () => {
                 (resumen.sinCatalogo.length ? `<br><span style="color:#b45309;">${resumen.sinCatalogo.length} SKU no están en el catálogo de ML: a esos hay que cargarles los competidores a mano.</span>` : '') +
                 (resumen.errores ? `<br><span style="color:#ef4444;">${resumen.errores} SKU no se pudieron consultar (probá de nuevo).</span>` : ''),
             icon: resumen.errores ? 'warning' : 'success', confirmButtonColor: '#3b82f6'
+        });
+    }
+
+    const MOTIVOS = {
+        no_encontrada: 'ML no devolvió nuestra publicación', sin_catalogo: 'la publicación no está en catálogo',
+        sin_competidores: 'catálogo sin otros vendedores', sin_ganador: 'el producto de catálogo no tiene publicaciones activas'
+    };
+    async function mostrarDiagnostico(it, resumen) {
+        let diag = null;
+        try {
+            const r = await fetch('/api/ml/diag?mla=' + encodeURIComponent(it.mla), { credentials: 'same-origin', cache: 'no-store' });
+            diag = await r.json();
+        } catch (e) { diag = { error: e.message }; }
+        const motivos = Object.entries(resumen.motivos).map(([m, n]) => `<li>${n} SKU: ${esc(MOTIVOS[m] || m)}</li>`).join('');
+        Swal.fire({
+            title: 'No se encontraron competidores', icon: 'warning', width: 760, confirmButtonColor: '#3b82f6',
+            html: `<div style="text-align:left; font-size:.9rem;">Ningún SKU trajo competidores. Lo que respondió Mercado Libre:` +
+                `<ul style="margin:.5rem 0 1rem 1.2rem;">${motivos || '<li>sin detalle</li>'}</ul>` +
+                `Diagnóstico con la publicación <b>${esc(it.mla)}</b> (${esc(it.sku)}). Sacale una captura y mandásela a quien mantiene el sistema:` +
+                `<pre style="max-height:300px; overflow:auto; background:#f3f4f6; padding:.6rem; border-radius:6px; font-size:.72rem; white-space:pre-wrap;">${esc(JSON.stringify(diag, null, 1))}</pre></div>`
         });
     }
 
@@ -4123,6 +4145,7 @@ btnDownloadRestock.addEventListener('click', () => {
             }
             const todos = manuales.concat(nuevos);
             if (todos.length) store[it.sku] = todos; else delete store[it.sku];
+            if (r.motivo) resumen.motivos[r.motivo] = (resumen.motivos[r.motivo] || 0) + 1;
             if (nuevos.length) resumen.conComp++;
             else if (r.motivo === 'sin_catalogo' || r.motivo === 'no_encontrada') resumen.sinCatalogo.push(it.sku);
             else resumen.sinComp++;

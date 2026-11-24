@@ -36,6 +36,30 @@ module.exports = async (req, res) => {
             };
             const p = await ml.mlGet(`/products/${cat}`, t);
             pasos.producto = { ...resumen(p), nombre: p.data && p.data.name, ganador: p.data && p.data.buy_box_winner ? p.data.buy_box_winner.item_id : null };
+            // Alternativas para conseguir los vendedores del catálogo (por si /products/{id}/items está bloqueado)
+            const nombre = p.data && p.data.name;
+            const pruebas = {
+                items_sin_limite: `/products/${cat}/items`,
+                items_marketplace: `/products/${cat}/items?limit=5&context=channel_marketplace`,
+                busqueda_producto: `/sites/MLA/search?product_id=${cat}&limit=5`,
+                busqueda_catalogo: `/sites/MLA/search?catalog_product_id=${cat}&limit=5`,
+                busqueda_texto: nombre ? `/sites/MLA/search?q=${encodeURIComponent(nombre)}&limit=5` : null,
+                productos_busqueda: nombre ? `/products/search?status=active&site_id=MLA&limit=3&q=${encodeURIComponent(nombre)}` : null,
+                destacados_categoria: `/highlights/MLA/product/${cat}`
+            };
+            pasos.alternativas = {};
+            for (const [k, path] of Object.entries(pruebas)) {
+                if (!path) continue;
+                const r = await ml.mlGet(path, t);
+                const d = r.data || {};
+                const res = Array.isArray(d.results) ? d.results : null;
+                pasos.alternativas[k] = {
+                    ...resumen(r),
+                    cantidad: res ? res.length : undefined,
+                    total: d.paging ? d.paging.total : undefined,
+                    ejemplo: res && res[0] ? { id: res[0].id || res[0].item_id, vendedor: res[0].seller_id || (res[0].seller && res[0].seller.id), precio: res[0].price } : undefined
+                };
+            }
         }
         return ml.json(res, 200, { mla, pasos });
     } catch (e) {

@@ -3505,7 +3505,7 @@ btnDownloadRestock.addEventListener('click', () => {
             render();
             pintarCambios();
             resultsPanel.classList.remove('hidden');
-            if (mlConectado && items.length && tocaActualizar()) buscarCompetidoresMl({ automatica: true });
+            if (mlConectado && items.length && tocaActualizar() && !bloqueoReciente()) buscarCompetidoresMl({ automatica: true });
         } else {
             items = [];
             resultsPanel.classList.add('hidden');
@@ -4033,7 +4033,11 @@ btnDownloadRestock.addEventListener('click', () => {
         render();
         consultarEstadoMl();
         if (abortado) { Swal.fire('Búsqueda interrumpida', abortado, 'warning'); return; }
-        if (resumen.errores < lista.length) {
+        const consultadosMl = Object.values(resumen.motivos).reduce((a, b) => a + b, 0);
+        const bloqueadoMl = !resumen.conComp && consultadosMl > 0 && (resumen.motivos.error_403 || 0) >= consultadosMl * 0.8;
+        if (bloqueadoMl) { try { localStorage.setItem(BLOQUEO_KEY, new Date().toISOString()); } catch (e) { /* sin almacenamiento */ } }
+        // Con ML bloqueado no se pisa la última actualización (puede venir de una importación de competidores)
+        if (resumen.errores < lista.length && !bloqueadoMl) {
             ultima = { fecha: new Date().toISOString(), cambios: resumen.cambios, anterior: ultima ? ultima.fecha : null };
             try { localStorage.setItem(ultimaKey(), JSON.stringify(ultima)); } catch (e) { /* sin almacenamiento */ }
             pintarCambios();
@@ -4080,7 +4084,10 @@ btnDownloadRestock.addEventListener('click', () => {
         });
     }
 
-    let mlBloqueado = false;
+    // Si ML bloqueó la búsqueda (403) en la última semana, no se reintenta sola cada día
+    const BLOQUEO_KEY = 'competenciaML.mlbloqueado.v1';
+    const bloqueoReciente = () => { try { const f = localStorage.getItem(BLOQUEO_KEY); return !!f && Date.now() - new Date(f).getTime() < 7 * 86400000; } catch (e) { return false; } };
+    let mlBloqueado = bloqueoReciente();
     function pintarBloqueoMl() {
         if (!mlBloqueado || document.getElementById('comp-ml-bloqueo')) return;
         mlEstado.parentElement.insertAdjacentHTML('afterend', `<div id="comp-ml-bloqueo" class="comp-ml-bloqueo"><i class="fa-solid fa-triangle-exclamation"></i>
@@ -4273,8 +4280,10 @@ btnDownloadRestock.addEventListener('click', () => {
                 const cVend = up.findIndex(x => x.startsWith('VENDEDOR'));
                 const cPrecio = up.findIndex(x => x.startsWith('PRECIO'));
                 const cFecha = up.findIndex(x => x.startsWith('FECHA'));
+                const cFull = up.findIndex(x => x === 'FULL');
                 if (cLink === -1 && cMla === -1) throw new Error("El Excel necesita una columna 'Link' o 'MLA'.");
-                let n = 0, skus = new Set();
+                // Se agrupa por SKU: así, al volver a importar, se sabe quién cambió el precio, quién es nuevo y quién ya no está
+                const porSku = new Map();
                 for (let i = h + 1; i < rows.length; i++) {
                     const r = rows[i];
                     const sku = normSku(r[cSku]);
@@ -4282,12 +4291,50 @@ btnDownloadRestock.addEventListener('click', () => {
                     if (!sku || !ref) continue;
                     const precio = cPrecio !== -1 ? toNum(r[cPrecio]) : null;
                     const fecha = cFecha !== -1 && /^\d{4}-\d{2}-\d{2}$/.test(String(r[cFecha])) ? String(r[cFecha]) : hoy();
-                    upsertComp(sku, { ...ref, precio: precio || null, vendedor: cVend !== -1 ? String(r[cVend] || '').trim() : '', fecha });
-                    n++; skus.add(sku);
+                    const full = cFull !== -1 && /^(S[IÍ]|1|TRUE|X)$/i.test(String(r[cFull]).trim());
+                    if (!porSku.has(sku)) porSku.set(sku, []);
+                    porSku.get(sku).push({ ...ref, precio: precio || null, vendedor: cVend !== -1 ? String(r[cVend] || '').trim() : '', fecha, full });
                 }
+                let n = 0;
+                const cambios = [];
+                const itemDe = new Map(items.map(it => [it.sku, it]));
+                porSku.forEach((filasSku, sku) => {
+                    const it = itemDe.get(sku);
+                    const anotar = (tipo, c, antes, ahora) => cambios.push({ tipo, sku, desc: it ? it.desc : '', vendedor: c.vendedor || '', mla: c.mla, url: c.url, antes, ahora, nuestro: it ? it.precio : null });
+                    const previos = store[sku] || [];
+                    const habiaImportados = previos.some(c => c.importado);
+                    const enArchivo = new Set(filasSku.map(c => c.mla || c.url));
+                    // Los que vinieron de una importación anterior y ya no están en el archivo: dejaron de competir
+                    previos.filter(c => c.importado && !enArchivo.has(c.mla || c.url)).forEach(c => anotar('salio', c, c.precio, null));
+                    store[sku] = previos.filter(c => !c.importado || enArchivo.has(c.mla || c.url));
+                    filasSku.forEach(nuevo => {
+                        const prev = store[sku].find(c => (nuevo.mla && c.mla === nuevo.mla) || (!nuevo.mla && c.url === nuevo.url));
+                        const datos = { ...nuevo, importado: true };
+                        delete datos.precioAnterior;
+                        if (prev && prev.precio > 0 && nuevo.precio > 0 && prev.precio !== nuevo.precio) {
+                            datos.precioAnterior = prev.precio;
+                            anotar(nuevo.precio < prev.precio ? 'bajo' : 'subio', nuevo, prev.precio, nuevo.precio);
+                        } else if (prev) {
+                            datos.fecha = prev.fecha || nuevo.fecha;   // mismo precio: se mantiene la fecha desde la que está así
+                        } else if (habiaImportados) anotar('nuevo', nuevo, null, nuevo.precio);
+                        if (prev) Object.assign(prev, datos, { id: prev.id }); else upsertComp(sku, datos);
+                        n++;
+                    });
+                    if (!store[sku].length) delete store[sku];
+                });
                 saveStore();
+                if (cambios.length || [...porSku.values()].length) {
+                    ultima = { fecha: new Date().toISOString(), cambios, anterior: ultima ? ultima.fecha : null };
+                    try { localStorage.setItem(ultimaKey(), JSON.stringify(ultima)); } catch (e) { /* sin almacenamiento */ }
+                    pintarCambios();
+                }
                 if (items.length) render();
-                Swal.fire({ title: 'Importado', html: `Se cargaron <b>${n}</b> competidores para <b>${skus.size}</b> SKU.`, icon: 'success', confirmButtonColor: '#3b82f6' });
+                const k = (t) => cambios.filter(x => x.tipo === t).length;
+                Swal.fire({
+                    title: 'Importado', icon: 'success', confirmButtonColor: '#3b82f6',
+                    html: `Se cargaron <b>${n}</b> competidores para <b>${porSku.size}</b> SKU.` +
+                        (cambios.length ? `<br><br>Respecto de la carga anterior: <b style="color:#10b981;">${k('bajo')} bajaron</b> · <b style="color:#ef4444;">${k('subio')} subieron</b> · ${k('nuevo')} nuevos · ${k('salio')} ya no están.<br><small>Los que cambiaron muestran una flecha ↓/↑ al lado del precio y están en el panel de cambios.</small>` : '')
+                });
             } catch (err) {
                 console.error(err);
                 Swal.fire('Error', err.message || 'No se pudo leer el archivo.', 'error');
@@ -4455,6 +4502,7 @@ btnDownloadRestock.addEventListener('click', () => {
     }
     pintarCambios();
     consultarEstadoMl().then(() => {
-        if (mlConectado && items.length && tocaActualizar()) buscarCompetidoresMl({ automatica: true });
+        if (mlConectado) pintarBloqueoMl();
+        if (mlConectado && items.length && tocaActualizar() && !bloqueoReciente()) buscarCompetidoresMl({ automatica: true });
     });
 })();

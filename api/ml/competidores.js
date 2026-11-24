@@ -20,16 +20,8 @@ async function leerBody(req) {
 const normMla = (s) => String(s || '').trim().toUpperCase().replace(/^MLA-?/, 'MLA');
 const partir = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 
-// /items?ids= admite hasta 20 publicaciones por llamada
-async function multiItems(ids, atributos, token) {
-    const mapa = {};
-    await ml.mapLimit(partir(ids, 20), 4, async (grupo) => {
-        const r = await ml.mlGet(`/items?ids=${grupo.join(',')}&attributes=${atributos}`, token);
-        if (!r.ok || !Array.isArray(r.data)) return;
-        r.data.forEach(x => { if (x && x.code === 200 && x.body) mapa[x.body.id] = x.body; });
-    });
-    return mapa;
-}
+// ML dio de baja /items?ids= para esta app (nov-2026): se consultan de a una
+const multiItems = (ids, atributos, token) => ml.itemsUnoAUno(ids, atributos, token);
 
 // Todas las publicaciones activas de un producto de catálogo
 async function itemsDeProducto(productId, token) {

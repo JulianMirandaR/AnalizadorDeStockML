@@ -4040,7 +4040,24 @@ btnDownloadRestock.addEventListener('click', () => {
             consultarEstadoMl();
         }
         // Ningún SKU con competidores: algo anda mal con ML. Se muestra qué respondió en cada paso.
-        if (!resumen.conComp && lista.length - resumen.errores > 0) { mostrarDiagnostico(lista[0], resumen); return; }
+        if (!resumen.conComp && lista.length - resumen.errores > 0) {
+            const consultados = Object.values(resumen.motivos).reduce((a, b) => a + b, 0);
+            // ML bloquea la lista de vendedores del catálogo (403 desde nov-2026)
+            if (consultados && (resumen.motivos.error_403 || 0) >= consultados * 0.8) {
+                mlBloqueado = true;
+                pintarBloqueoMl();
+                if (!automatica) Swal.fire({
+                    title: 'Mercado Libre bloqueó la búsqueda automática', icon: 'warning', width: 640, confirmButtonColor: '#3b82f6',
+                    html: `<div style="text-align:left; font-size:.92rem;">ML ya no deja que nuestra app consulte qué otros vendedores hay en cada catálogo ` +
+                        `(responde <b>403 UNAUTHORIZED</b>). No es un error del sistema: es una restricción de Mercado Libre.<br><br>` +
+                        `Mientras tanto podés cargar los competidores a mano con <b>+ Competidor</b> o con <b>Importar competidores</b> (Excel). ` +
+                        `La comparación, los colores, el margen y lo que recibimos siguen funcionando igual.</div>`
+                });
+                return;
+            }
+            mostrarDiagnostico(lista[0], resumen);
+            return;
+        }
         if (automatica) {
             const c = resumen.cambios;
             const n = (t) => c.filter(x => x.tipo === t).length;
@@ -4063,7 +4080,14 @@ btnDownloadRestock.addEventListener('click', () => {
         });
     }
 
+    let mlBloqueado = false;
+    function pintarBloqueoMl() {
+        if (!mlBloqueado || document.getElementById('comp-ml-bloqueo')) return;
+        mlEstado.parentElement.insertAdjacentHTML('afterend', `<div id="comp-ml-bloqueo" class="comp-ml-bloqueo"><i class="fa-solid fa-triangle-exclamation"></i>
+            Mercado Libre bloqueó la consulta de vendedores del catálogo (403): la búsqueda automática no trae competidores. Cargalos a mano con <b>+ Competidor</b> o <b>Importar competidores</b>.</div>`);
+    }
     const MOTIVOS = {
+        error_403: 'Mercado Libre bloqueó la lista de vendedores del catálogo (403)',
         no_encontrada: 'ML no devolvió nuestra publicación', sin_catalogo: 'la publicación no está en catálogo',
         sin_competidores: 'catálogo sin otros vendedores', sin_ganador: 'el producto de catálogo no tiene publicaciones activas'
     };

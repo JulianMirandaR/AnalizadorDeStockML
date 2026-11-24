@@ -81,11 +81,8 @@ module.exports = async (req, res) => {
     const token = s.at;
     const costos = {}, errores = {};
     try {
-        const items = {};
-        await ml.mapLimit(partir(mlas, 20), 3, async (grupo) => {
-            const r = await ml.mlGet(`/items?ids=${grupo.join(',')}&attributes=id,price,category_id,listing_type_id,shipping,seller_id`, token);
-            if (r.ok && Array.isArray(r.data)) r.data.forEach(x => { if (x && x.code === 200 && x.body) items[x.body.id] = x.body; });
-        });
+        // De a una: ML dio de baja /items?ids= para esta app (nov-2026)
+        const items = await ml.itemsUnoAUno(mlas, 'id,price,category_id,listing_type_id,shipping,seller_id', token);
         await ml.mapLimit(mlas, 6, async (id) => {
             const it = items[id];
             if (!it) { errores[id] = 'no_encontrada'; return; }

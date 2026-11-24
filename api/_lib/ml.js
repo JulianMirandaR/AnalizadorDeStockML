@@ -94,6 +94,17 @@ async function mlGet(path, token) {
     return { status: r.status, ok: r.ok, data };
 }
 
+// Publicaciones de a una (/items/{id}). ML dio de baja /items?ids= para esta app
+// ("Resource deprecated - client no longer allowed", nov-2026). Devuelve { id: item }.
+async function itemsUnoAUno(ids, atributos, token, limite = 6) {
+    const mapa = {};
+    await mapLimit([...new Set(ids)], limite, async (id) => {
+        const r = await mlGet(`/items/${id}?attributes=${atributos}`, token);
+        if (r.ok && r.data && r.data.id) mapa[r.data.id] = r.data;
+    });
+    return mapa;
+}
+
 // Ejecuta fn sobre cada elemento con como máximo "limite" llamadas en paralelo.
 async function mapLimit(items, limite, fn) {
     const out = new Array(items.length);
@@ -119,5 +130,5 @@ const nuevoState = () => crypto.randomBytes(16).toString('hex');
 
 module.exports = {
     API, AUTH_URL, COOKIE, STATE_COOKIE, CLIENT_ID, configurado, redirectUri, leerCookies, cookie, agregarCookie,
-    leerSesion, guardarSesion, borrarSesion, pedirToken, sesionDeToken, sesionValida, mlGet, mapLimit, json, nuevoState
+    leerSesion, guardarSesion, borrarSesion, pedirToken, sesionDeToken, sesionValida, mlGet, mapLimit, itemsUnoAUno, json, nuevoState
 };

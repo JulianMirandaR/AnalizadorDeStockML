@@ -3912,14 +3912,20 @@ btnDownloadRestock.addEventListener('click', () => {
             mlEstado.textContent = 'No conectado: conectá la cuenta de Mercado Libre para buscar competidores automáticamente.';
         }
     }
-    async function consultarEstadoMl() {
-        try {
-            const r = await fetch('/api/ml/status', { credentials: 'same-origin', cache: 'no-store' });
-            const ct = r.headers.get('content-type') || '';
-            pintarEstadoMl(r.ok && ct.includes('json') ? await r.json() : null);
-        } catch (e) { pintarEstadoMl(null); }
+    // Un solo pedido de estado a la vez: dos en paralelo podían renovar el token de ML al mismo
+    // tiempo (es de un solo uso) y la conexión se perdía.
+    let estadoEnCurso = null;
+    function consultarEstadoMl() {
+        if (estadoEnCurso) return estadoEnCurso;
+        estadoEnCurso = (async () => {
+            try {
+                const r = await fetch('/api/ml/status', { credentials: 'same-origin', cache: 'no-store' });
+                const ct = r.headers.get('content-type') || '';
+                pintarEstadoMl(r.ok && ct.includes('json') ? await r.json() : null);
+            } catch (e) { pintarEstadoMl(null); }
+        })().finally(() => { estadoEnCurso = null; });
+        return estadoEnCurso;
     }
-    consultarEstadoMl();
 
     mlEstado.addEventListener('click', async (e) => {
         if (e.target.id !== 'comp-ml-salir') return;

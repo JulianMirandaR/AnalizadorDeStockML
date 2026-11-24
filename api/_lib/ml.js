@@ -79,7 +79,11 @@ async function sesionValida(req, res) {
         guardarSesion(req, res, nueva);
         return nueva;
     } catch (e) {
-        borrarSesion(req, res); // refresh token vencido o revocado: hay que volver a conectar
+        // No se borra la cookie: el refresh token de ML es de un solo uso y, si dos pedidos lo
+        // renuevan a la vez, el segundo falla aunque el primero haya guardado uno nuevo. Borrarla
+        // acá pisaba esa sesión buena y desconectaba la página. Si el token de verdad fue revocado,
+        // la página muestra "no conectado" y al volver a conectar se reemplaza la cookie.
+        console.warn('No se pudo renovar el token de ML:', e.status || '', e.message);
         return null;
     }
 }
